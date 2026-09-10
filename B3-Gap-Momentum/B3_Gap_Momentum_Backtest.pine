@@ -1,0 +1,532 @@
+//@version=5
+indicator("B3 Gap Momentum - Backtest Composto V9 - Conexoes Numeradas", overlay = true, max_bars_back = 5000)
+
+// ============================================================================
+// FINALIDADE
+// ============================================================================
+// Este script NAO escolhe ativos e NAO recalcula Gap Momentum/Momentum.
+// Ele recebe do Script 1 os eventos de execucao da carteira semanal e faz apenas
+// a contabilidade do backtest.
+//
+// Regra financeira:
+// - 100% do patrimonio disponivel e aplicado em cada nova entrada;
+// - quantidade fracionaria/sintetica e permitida;
+// - ao sair, todo o valor obtido volta ao patrimonio;
+// - a proxima entrada reinveste 100% desse novo patrimonio;
+// - os resultados sao capitalizados de forma composta.
+//
+// Modos:
+// - ANUAL: calcula somente o ano escolhido (2018 a 2026), sem herdar posicao anterior;
+// - COMPLETO: calcula continuamente desde a primeira entrada valida a partir de 2018
+//   ate a ultima saida disponivel no historico atual, sem reiniciar o capital por ano.
+// ============================================================================
+
+// ============================================================================
+// 1. CONEXAO COM O SCRIPT 1
+// ============================================================================
+// IMPORTANTE: conecte na mesma ordem em que os plots do Script 1 aparecem
+// no seletor de fonte do TradingView. Os numeros abaixo servem como guia visual.
+// Os canais 01 e 02 sao de auditoria da decisao semanal; o motor financeiro
+// usa os canais 03 a 09 para processar as entradas e saidas efetivamente executadas.
+const string CONNECTION_GROUP = "1. Conexao com Script 1 - seguir ordem 01 a 09"
+float SRC_WEEKLY_POSITION = input.source(close, "01 - BT_WEEKLY_POSITION", group = CONNECTION_GROUP)
+float SRC_WEEKLY_EVENT = input.source(close, "02 - BT_WEEKLY_EVENT", group = CONNECTION_GROUP)
+float SRC_TRADE_POSITION = input.source(close, "03 - BT_TRADE_POSITION", group = CONNECTION_GROUP)
+float SRC_TRADE_EVENT = input.source(close, "04 - BT_TRADE_EVENT", group = CONNECTION_GROUP)
+float SRC_ENTRY_PRICE = input.source(close, "05 - BT_ENTRY_PRICE", group = CONNECTION_GROUP)
+float SRC_ENTRY_TIME = input.source(close, "06 - BT_ENTRY_TIME", group = CONNECTION_GROUP)
+float SRC_EXIT_POSITION = input.source(close, "07 - BT_EXIT_POSITION", group = CONNECTION_GROUP)
+float SRC_EXIT_PRICE = input.source(close, "08 - BT_EXIT_PRICE", group = CONNECTION_GROUP)
+float SRC_EXIT_TIME = input.source(close, "09 - BT_EXIT_TIME", group = CONNECTION_GROUP)
+
+// ============================================================================
+// 2. PARAMETROS DO BACKTEST
+// ============================================================================
+const string TEST_GROUP = "2. Parametros do backtest"
+float INITIAL_CAPITAL = input.float(1000.0, "Capital inicial (R$)", minval = 0.01, step = 100.0, group = TEST_GROUP)
+string BACKTEST_MODE = input.string("COMPLETO", "Modo do backtest", options = ["ANUAL", "COMPLETO"], group = TEST_GROUP)
+int SELECTED_YEAR = input.int(2026, "Ano do backtest anual", options = [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026], group = TEST_GROUP)
+
+const string DISPLAY_GROUP = "3. Visualizacao"
+bool SHOW_TRADE_TABLE = input.bool(false, "Exibir tabela de compras e vendas", group = DISPLAY_GROUP)
+bool SHOW_EQUITY_CURVE = input.bool(true, "Exibir curva do patrimonio", group = DISPLAY_GROUP)
+
+const string B3_TIMEZONE = "America/Sao_Paulo"
+const int FIRST_AVAILABLE_YEAR = 2018
+const int LAST_AVAILABLE_YEAR = 2026
+const int YEAR_COUNT = LAST_AVAILABLE_YEAR - FIRST_AVAILABLE_YEAR + 1
+
+int YEAR_START = timestamp(B3_TIMEZONE, SELECTED_YEAR, 1, 1, 0, 0)
+int YEAR_END = timestamp(B3_TIMEZONE, SELECTED_YEAR, 12, 31, 23, 59)
+int COMPLETE_START = timestamp(B3_TIMEZONE, FIRST_AVAILABLE_YEAR, 1, 1, 0, 0)
+int COMPLETE_END = timenow
+
+int TEST_START = BACKTEST_MODE == "ANUAL" ? YEAR_START : COMPLETE_START
+int TEST_END = BACKTEST_MODE == "ANUAL" ? YEAR_END : COMPLETE_END
+
+// ============================================================================
+// 3. CONSTANTES E UNIVERSO
+// ============================================================================
+const int POSITION_CASH = -1
+const int POSITION_UNSET = -2
+const int N = 29
+const int HISTORY_ROWS = 12
+
+var array<string> NAMES = array.from("ABEV3", "BBAS3", "BBDC3", "BBSE3", "CMIG4", "CSAN3", "CSMG3", "CSNA3", "PRIO3", "EGIE3", "EQTL3", "FLRY3", "GGBR3", "HYPE3", "IRBR3", "ITUB4", "JHSF3", "LREN3", "MULT3", "PETR4", "RADL3", "RAIL3", "RENT3", "SBSP3", "SUZB3", "TUPY3", "UGPA3", "VALE3", "WEGE3")
+
+// ============================================================================
+// 4. FUNCOES AUXILIARES
+// ============================================================================
+f_valid_position(float sourceValue) =>
+    not na(sourceValue) and math.round(sourceValue) >= POSITION_UNSET and math.round(sourceValue) <= N - 1
+
+f_position(float sourceValue) =>
+    f_valid_position(sourceValue) ? int(math.round(sourceValue)) : POSITION_UNSET
+
+f_valid_timestamp(float sourceValue) =>
+    not na(sourceValue) and sourceValue >= 946684800000.0 and sourceValue <= 4102444799000.0
+
+f_timestamp(float sourceValue) =>
+    f_valid_timestamp(sourceValue) ? int(math.round(sourceValue)) : na
+
+f_ticker(int positionIndex) =>
+    string result = "N/D"
+    if positionIndex >= 0 and positionIndex < N
+        result := array.get(NAMES, positionIndex)
+    else if positionIndex == POSITION_CASH
+        result := "CAIXA"
+    result
+
+f_date(int timestampValue) =>
+    na(timestampValue) ? "-" : str.format_time(timestampValue, "dd/MM/yyyy", B3_TIMEZONE)
+
+f_date_short(int timestampValue) =>
+    na(timestampValue) ? "-" : str.format_time(timestampValue, "dd/MM/yy", B3_TIMEZONE)
+
+f_money(float value) =>
+    na(value) ? "-" : "R$ " + str.tostring(value, "#.00")
+
+f_price(float value) =>
+    na(value) ? "-" : str.tostring(value, "#.00")
+
+f_percent(float value) =>
+    na(value) ? "-" : str.tostring(value * 100.0, "#.##") + "%"
+
+// ============================================================================
+// 5. ESTADO FINANCEIRO DO BACKTEST
+// ============================================================================
+var float capital = INITIAL_CAPITAL
+var float peakCapital = INITIAL_CAPITAL
+var float maxDrawdown = 0.0
+
+var bool activeTrade = false
+var int activePosition = POSITION_UNSET
+var float activeEntryPrice = na
+var int activeEntryTime = na
+var float activeEntryCapital = na
+var float activeQuantity = na
+
+var int entriesCount = 0
+var int closedTrades = 0
+var int winningTrades = 0
+var int losingTrades = 0
+var int flatTrades = 0
+
+var float grossProfit = 0.0
+var float grossLoss = 0.0
+var float sumReturns = 0.0
+var float bestTradeReturn = na
+var float worstTradeReturn = na
+
+var bool connectionError = false
+var int dataErrorCount = 0
+
+// Periodo efetivo do backtest.
+var int firstEntryTime = na
+var int lastExitTime = na
+
+// Marca os anos em que houve exposicao efetiva no modo COMPLETO.
+var array<bool> investedYears = array.new_bool(YEAR_COUNT, false)
+// Soma o P/L REALIZADO de cada ano para identificar anos com prejuizo.
+var array<float> yearlyRealizedPnL = array.new_float(YEAR_COUNT, 0.0)
+
+// Historico das ultimas operacoes FECHADAS, mais recente primeiro.
+var array<string> histTicker = array.new_string()
+var array<int> histEntryTime = array.new_int()
+var array<float> histEntryPrice = array.new_float()
+var array<float> histCapitalBefore = array.new_float()
+var array<int> histExitTime = array.new_int()
+var array<float> histExitPrice = array.new_float()
+var array<float> histReturn = array.new_float()
+var array<float> histPnL = array.new_float()
+var array<float> histCapitalAfter = array.new_float()
+
+f_store_trade(string tickerValue, int entryTimeValue, float entryPriceValue, float capitalBeforeValue, int exitTimeValue, float exitPriceValue, float returnValue, float pnlValue, float capitalAfterValue) =>
+    array.unshift(histTicker, tickerValue)
+    array.unshift(histEntryTime, entryTimeValue)
+    array.unshift(histEntryPrice, entryPriceValue)
+    array.unshift(histCapitalBefore, capitalBeforeValue)
+    array.unshift(histExitTime, exitTimeValue)
+    array.unshift(histExitPrice, exitPriceValue)
+    array.unshift(histReturn, returnValue)
+    array.unshift(histPnL, pnlValue)
+    array.unshift(histCapitalAfter, capitalAfterValue)
+    if array.size(histTicker) > HISTORY_ROWS
+        array.pop(histTicker)
+        array.pop(histEntryTime)
+        array.pop(histEntryPrice)
+        array.pop(histCapitalBefore)
+        array.pop(histExitTime)
+        array.pop(histExitPrice)
+        array.pop(histReturn)
+        array.pop(histPnL)
+        array.pop(histCapitalAfter)
+
+// ============================================================================
+// 6. VALIDACAO BASICA DA CONEXAO
+// ============================================================================
+bool rawWeeklyEventPresent = not na(SRC_WEEKLY_EVENT)
+bool validWeeklyEvent = rawWeeklyEventPresent and f_valid_timestamp(SRC_WEEKLY_EVENT)
+bool rawTradeEventPresent = not na(SRC_TRADE_EVENT)
+bool validTradeEvent = rawTradeEventPresent and f_valid_timestamp(SRC_TRADE_EVENT)
+
+// Se os campos ainda estiverem apontando para OHLC (por exemplo, Fechamento),
+// os timestamps nao serao validos e o painel mostrara ERRO CONEXAO.
+if rawWeeklyEventPresent and not validWeeklyEvent
+    connectionError := true
+if rawTradeEventPresent and not validTradeEvent
+    connectionError := true
+
+// Antes de processar um evento de saida, registra que uma posicao carregada durante
+// esta barra representa exposicao naquele ano. Isso inclui posicoes atravessando anos.
+if BACKTEST_MODE == "COMPLETO" and activeTrade and time >= COMPLETE_START and time <= COMPLETE_END
+    int heldYear = year(time)
+    if heldYear >= FIRST_AVAILABLE_YEAR and heldYear <= LAST_AVAILABLE_YEAR
+        array.set(investedYears, heldYear - FIRST_AVAILABLE_YEAR, true)
+
+// ============================================================================
+// 7. MOTOR DE BACKTEST COM REINVESTIMENTO DE 100%
+// ============================================================================
+if validTradeEvent
+    int eventTime = f_timestamp(SRC_TRADE_EVENT)
+    bool eventInsideTest = eventTime >= TEST_START and eventTime <= TEST_END
+
+    if eventInsideTest
+        int heldAfterEvent = f_position(SRC_TRADE_POSITION)
+        int exitPosition = f_position(SRC_EXIT_POSITION)
+        float entryPriceEvent = SRC_ENTRY_PRICE
+        int entryTimeEvent = f_timestamp(SRC_ENTRY_TIME)
+        float exitPriceEvent = SRC_EXIT_PRICE
+        int exitTimeEvent = f_timestamp(SRC_EXIT_TIME)
+
+        bool hasExit = exitPosition >= 0 and exitPosition < N and not na(exitPriceEvent) and exitPriceEvent > 0.0 and not na(exitTimeEvent)
+        bool hasEntry = heldAfterEvent >= 0 and heldAfterEvent < N and not na(entryPriceEvent) and entryPriceEvent > 0.0 and not na(entryTimeEvent)
+
+        // --------------------------------------------------------------------
+        // 7A. SAIDA: PROCESSADA ANTES DA NOVA ENTRADA
+        // --------------------------------------------------------------------
+        if hasExit
+            if activeTrade and exitPosition == activePosition
+                float exitValue = activeQuantity * exitPriceEvent
+                float tradePnL = exitValue - activeEntryCapital
+                float tradeReturn = activeEntryCapital > 0.0 ? tradePnL / activeEntryCapital : na
+
+                capital := exitValue
+                closedTrades += 1
+                sumReturns += tradeReturn
+
+                if tradePnL > 0.0
+                    winningTrades += 1
+                    grossProfit += tradePnL
+                else if tradePnL < 0.0
+                    losingTrades += 1
+                    grossLoss += math.abs(tradePnL)
+                else
+                    flatTrades += 1
+
+                // No modo COMPLETO, o resultado da operacao pertence ao ano da SAIDA.
+                // Isso permite contar quantos anos investidos terminaram com P/L realizado negativo.
+                if BACKTEST_MODE == "COMPLETO"
+                    int exitYearForStats = year(exitTimeEvent)
+                    if exitYearForStats >= FIRST_AVAILABLE_YEAR and exitYearForStats <= LAST_AVAILABLE_YEAR
+                        int yearIndexForStats = exitYearForStats - FIRST_AVAILABLE_YEAR
+                        float previousYearPnL = array.get(yearlyRealizedPnL, yearIndexForStats)
+                        array.set(yearlyRealizedPnL, yearIndexForStats, previousYearPnL + tradePnL)
+
+                bestTradeReturn := na(bestTradeReturn) ? tradeReturn : math.max(bestTradeReturn, tradeReturn)
+                worstTradeReturn := na(worstTradeReturn) ? tradeReturn : math.min(worstTradeReturn, tradeReturn)
+
+                peakCapital := math.max(peakCapital, capital)
+                float currentDrawdown = peakCapital > 0.0 ? capital / peakCapital - 1.0 : 0.0
+                maxDrawdown := math.min(maxDrawdown, currentDrawdown)
+                lastExitTime := exitTimeEvent
+
+                f_store_trade(f_ticker(activePosition), activeEntryTime, activeEntryPrice, activeEntryCapital, exitTimeEvent, exitPriceEvent, tradeReturn, tradePnL, capital)
+
+                activeTrade := false
+                activePosition := POSITION_UNSET
+                activeEntryPrice := na
+                activeEntryTime := na
+                activeEntryCapital := na
+                activeQuantity := na
+            else if activeTrade
+                dataErrorCount += 1
+
+        // --------------------------------------------------------------------
+        // 7B. NOVA ENTRADA COM 100% DO PATRIMONIO DISPONIVEL
+        // --------------------------------------------------------------------
+        if hasEntry
+            if not activeTrade
+                activeTrade := true
+                activePosition := heldAfterEvent
+                activeEntryPrice := entryPriceEvent
+                activeEntryTime := entryTimeEvent
+                activeEntryCapital := capital
+                activeQuantity := capital / entryPriceEvent
+                entriesCount += 1
+
+                if na(firstEntryTime)
+                    firstEntryTime := entryTimeEvent
+
+                if BACKTEST_MODE == "COMPLETO"
+                    int entryYear = year(entryTimeEvent)
+                    if entryYear >= FIRST_AVAILABLE_YEAR and entryYear <= LAST_AVAILABLE_YEAR
+                        array.set(investedYears, entryYear - FIRST_AVAILABLE_YEAR, true)
+            else
+                dataErrorCount += 1
+
+// ============================================================================
+// 8. ESTATISTICAS
+// ============================================================================
+float netPnL = capital - INITIAL_CAPITAL
+float totalReturn = INITIAL_CAPITAL > 0.0 ? capital / INITIAL_CAPITAL - 1.0 : na
+float winRate = closedTrades > 0 ? float(winningTrades) / float(closedTrades) : na
+float averageTradeReturn = closedTrades > 0 ? sumReturns / float(closedTrades) : na
+
+float profitFactor = na
+if grossLoss > 0.0
+    profitFactor := grossProfit / grossLoss
+else if grossProfit == 0.0
+    profitFactor := 0.0
+
+int investedYearCount = 0
+int losingYearCount = 0
+if BACKTEST_MODE == "ANUAL"
+    investedYearCount := entriesCount > 0 ? 1 : 0
+    losingYearCount := investedYearCount > 0 and netPnL < 0.0 ? 1 : 0
+else
+    for i = 0 to YEAR_COUNT - 1
+        bool yearWasInvested = array.get(investedYears, i)
+        if yearWasInvested
+            investedYearCount += 1
+            if array.get(yearlyRealizedPnL, i) < 0.0
+                losingYearCount += 1
+
+float averageAnnualProfit = na
+if BACKTEST_MODE == "COMPLETO" and investedYearCount > 0
+    averageAnnualProfit := netPnL / float(investedYearCount)
+
+// CAGR usa o periodo efetivo entre a primeira entrada e a ultima saida contabilizada.
+float annualizedReturn = na
+if BACKTEST_MODE == "COMPLETO" and not na(firstEntryTime) and not na(lastExitTime) and lastExitTime > firstEntryTime and INITIAL_CAPITAL > 0.0 and capital > 0.0
+    float elapsedYears = float(lastExitTime - firstEntryTime) / 31557600000.0
+    if elapsedYears > 0.0
+        annualizedReturn := math.pow(capital / INITIAL_CAPITAL, 1.0 / elapsedYears) - 1.0
+
+bool chartInsideTest = time >= TEST_START and time <= TEST_END
+plot(SHOW_EQUITY_CURVE and chartInsideTest ? capital : na, "Patrimonio realizado", linewidth = 2)
+plot(SHOW_EQUITY_CURVE and chartInsideTest ? INITIAL_CAPITAL : na, "Capital inicial", linewidth = 1)
+
+// ============================================================================
+// 9. TABELA PRINCIPAL DO BACKTEST - COMPACTA E 100% OPACA
+// ============================================================================
+// O painel usa quatro colunas: METRICA | VALOR | METRICA | VALOR.
+// Isso reduz a altura de 27 para 14 linhas e facilita visualizar tudo na tela.
+bool IS_LIGHT_THEME = chart.fg_color == #0f0f0f
+color PANEL_BG = IS_LIGHT_THEME ? color.rgb(248, 248, 248) : color.rgb(12, 12, 12)
+color TEXT_COLOR = chart.fg_color
+color HEADER_BG = IS_LIGHT_THEME ? color.rgb(218, 218, 218) : color.rgb(30, 30, 30)
+color POSITIVE_BG = IS_LIGHT_THEME ? color.rgb(190, 224, 198) : color.rgb(5, 50, 27)
+color NEGATIVE_BG = IS_LIGHT_THEME ? color.rgb(236, 196, 196) : color.rgb(72, 20, 24)
+color NEUTRAL_BG = IS_LIGHT_THEME ? color.rgb(232, 232, 232) : color.rgb(38, 38, 38)
+color BORDER_COLOR = IS_LIGHT_THEME ? color.rgb(125, 125, 125) : color.rgb(88, 88, 88)
+
+var table summaryTable = na
+
+if barstate.islast
+    if na(summaryTable)
+        summaryTable := table.new(position.top_right, 4, 13, bgcolor = PANEL_BG, frame_color = BORDER_COLOR, frame_width = 1, border_color = BORDER_COLOR, border_width = 1)
+        table.merge_cells(summaryTable, 0, 0, 1, 0)
+        table.merge_cells(summaryTable, 2, 0, 3, 0)
+
+    for r = 0 to 12
+        for c = 0 to 3
+            table.cell(summaryTable, c, r, "", bgcolor = PANEL_BG, text_color = TEXT_COLOR, text_size = size.small)
+
+    string panelTitle = BACKTEST_MODE == "ANUAL" ? "BACKTEST ANUAL" : "BACKTEST COMPLETO"
+    string panelSubtitle = BACKTEST_MODE == "ANUAL" ? str.tostring(SELECTED_YEAR) + " | 100% REINVESTIDO" : "2018-ATUAL | 100% REINVESTIDO"
+    table.cell(summaryTable, 0, 0, panelTitle, bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 0, panelSubtitle, bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+
+    string configuredWindow = BACKTEST_MODE == "ANUAL" ? f_date(YEAR_START) + " -> " + f_date(YEAR_END) : f_date(COMPLETE_START) + " -> ATUAL"
+    string effectivePeriodText = "SEM ENTRADAS"
+    if not na(firstEntryTime)
+        if na(lastExitTime)
+            effectivePeriodText := f_date(firstEntryTime) + " -> SEM SAIDA"
+        else
+            effectivePeriodText := f_date(firstEntryTime) + " -> " + f_date(lastExitTime)
+
+    color capitalBg = netPnL > 0.0 ? POSITIVE_BG : netPnL < 0.0 ? NEGATIVE_BG : NEUTRAL_BG
+    string investedYearsLossText = str.tostring(investedYearCount) + "/" + str.tostring(losingYearCount)
+    string openPositionText = activeTrade ? f_ticker(activePosition) : "CAIXA / SEM POS."
+    string openEntryText = activeTrade ? f_date_short(activeEntryTime) + " @ " + f_price(activeEntryPrice) + " | " + f_money(activeEntryCapital) : "-"
+
+    string statusText = "OK"
+    color statusBg = POSITIVE_BG
+    if connectionError
+        statusText := "ERRO CONEXAO"
+        statusBg := NEGATIVE_BG
+    else if dataErrorCount > 0
+        statusText := "ALERTA DADOS: " + str.tostring(dataErrorCount)
+        statusBg := NEGATIVE_BG
+    else if closedTrades == 0
+        statusText := "SEM OPS. FECHADAS"
+        statusBg := NEUTRAL_BG
+
+    // Linha 1
+    table.cell(summaryTable, 0, 1, "Modo", bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 1, BACKTEST_MODE, bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 1, "Janela", bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 1, configuredWindow, bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 2 - primeira entrada e ultima saida juntas
+    table.cell(summaryTable, 0, 2, "1a entrada", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 2, f_date(firstEntryTime), text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 2, "Ultima saida", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 2, f_date(lastExitTime), text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 3 - capital inicial e final juntos
+    table.cell(summaryTable, 0, 3, "Capital inicial", bgcolor = capitalBg, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 3, f_money(INITIAL_CAPITAL), bgcolor = capitalBg, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 3, "Capital final", bgcolor = capitalBg, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 3, f_money(capital), bgcolor = capitalBg, text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 4 - resultado financeiro
+    table.cell(summaryTable, 0, 4, "Lucro / prejuizo", bgcolor = capitalBg, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 4, f_money(netPnL), bgcolor = capitalBg, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 4, "Retorno total", bgcolor = capitalBg, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 4, f_percent(totalReturn), bgcolor = capitalBg, text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 5
+    table.cell(summaryTable, 0, 5, "Anos investidos/prejuizo", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 5, investedYearsLossText, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 5, "Lucro medio anual", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 5, BACKTEST_MODE == "COMPLETO" ? f_money(averageAnnualProfit) : "-", text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 6
+    table.cell(summaryTable, 0, 6, "CAGR anual", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 6, BACKTEST_MODE == "COMPLETO" ? f_percent(annualizedReturn) : "-", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 6, "Entradas / fechadas", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 6, str.tostring(entriesCount) + " / " + str.tostring(closedTrades), text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 7
+    table.cell(summaryTable, 0, 7, "Venc. / perd.", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 7, str.tostring(winningTrades) + " / " + str.tostring(losingTrades), text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 7, "Taxa acerto", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 7, f_percent(winRate), text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 8
+    table.cell(summaryTable, 0, 8, "Lucro bruto", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 8, f_money(grossProfit), text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 8, "Perda bruta", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 8, f_money(grossLoss), text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 9
+    table.cell(summaryTable, 0, 9, "Ret. medio/op.", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 9, f_percent(averageTradeReturn), text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 9, "Melhor / pior", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 9, f_percent(bestTradeReturn) + " / " + f_percent(worstTradeReturn), text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 10
+    table.cell(summaryTable, 0, 10, "Max drawdown", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 10, f_percent(maxDrawdown), text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 10, "Profit factor", text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 10, na(profitFactor) ? "N/D" : str.tostring(profitFactor, "#.##"), text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 11
+    table.cell(summaryTable, 0, 11, "Posicao aberta", bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 11, openPositionText, bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 11, "Entrada aberta", bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 11, openEntryText, bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+
+    // Linha 12
+    table.cell(summaryTable, 0, 12, "Tabela C/V", bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 1, 12, SHOW_TRADE_TABLE ? "VISIVEL" : "OCULTA", bgcolor = NEUTRAL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 2, 12, "Status", bgcolor = statusBg, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(summaryTable, 3, 12, statusText, bgcolor = statusBg, text_color = TEXT_COLOR, text_size = size.small)
+
+// ============================================================================
+// 10. TABELA OPCIONAL DE COMPRAS E VENDAS - COMPACTA E 100% OPACA
+// ============================================================================
+// Fica OCULTA por padrao. Ative em Configuracoes > Entradas > Visualizacao.
+// Exibe as 12 operacoes fechadas mais recentes para preservar espaco na tela.
+var table historyTable = na
+
+if barstate.islast
+    if SHOW_TRADE_TABLE
+        if na(historyTable)
+            historyTable := table.new(position.bottom_left, 10, HISTORY_ROWS + 2, bgcolor = PANEL_BG, frame_color = BORDER_COLOR, frame_width = 1, border_color = BORDER_COLOR, border_width = 1)
+            table.merge_cells(historyTable, 0, 0, 9, 0)
+
+        table.cell(historyTable, 0, 0, "COMPRAS/VENDAS - ULTIMAS " + str.tostring(HISTORY_ROWS) + " OPS.", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 0, 1, "#", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 1, 1, "ACAO", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 2, 1, "COMPRA", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 3, 1, "P.COMP", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 4, 1, "CAP.ENT", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 5, 1, "VENDA", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 6, 1, "P.VEND", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 7, 1, "RET.%", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 8, 1, "P/L", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(historyTable, 9, 1, "CAP.APOS", bgcolor = HEADER_BG, text_color = TEXT_COLOR, text_size = size.small)
+
+        for row = 0 to HISTORY_ROWS - 1
+            int tableRow = row + 2
+            if row < array.size(histTicker)
+                float rowReturn = array.get(histReturn, row)
+                color rowBg = rowReturn > 0.0 ? POSITIVE_BG : rowReturn < 0.0 ? NEGATIVE_BG : NEUTRAL_BG
+                table.cell(historyTable, 0, tableRow, str.tostring(closedTrades - row), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 1, tableRow, array.get(histTicker, row), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 2, tableRow, f_date_short(array.get(histEntryTime, row)), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 3, tableRow, f_price(array.get(histEntryPrice, row)), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 4, tableRow, f_money(array.get(histCapitalBefore, row)), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 5, tableRow, f_date_short(array.get(histExitTime, row)), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 6, tableRow, f_price(array.get(histExitPrice, row)), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 7, tableRow, f_percent(rowReturn), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 8, tableRow, f_money(array.get(histPnL, row)), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+                table.cell(historyTable, 9, tableRow, f_money(array.get(histCapitalAfter, row)), bgcolor = rowBg, text_color = TEXT_COLOR, text_size = size.small)
+            else
+                for col = 0 to 9
+                    table.cell(historyTable, col, tableRow, "", bgcolor = PANEL_BG, text_color = TEXT_COLOR, text_size = size.small)
+    else
+        if not na(historyTable)
+            table.delete(historyTable)
+            historyTable := na
+
+// ============================================================================
+// 11. REGRAS DE AUDITORIA
+// ============================================================================
+// - Modo ANUAL: escolhe 2018...2026 e reinicia o capital para esse teste.
+// - Modo COMPLETO: processa continuamente de 2018 ate o historico atual.
+// - O modo COMPLETO NAO reinicia o capital em janeiro: preserva capitalizacao composta.
+// - Anos inv./prejuizo = anos com exposicao / anos cujo P/L realizado no ano foi negativo.
+// - Lucro medio anual = P/L realizado total / quantidade de anos com exposicao.
+// - Retorno medio anual = CAGR entre primeira entrada e ultima saida contabilizada.
+// - A tabela detalhada de compras/vendas fica oculta por padrao e mostra 12 operacoes quando ativada.
+// - Todas as tabelas usam fundo 100% opaco e texto size.small para melhorar a legibilidade sem perder o painel compacto.
+// - Cada saida atualiza o capital; a entrada seguinte usa 100% do novo patrimonio.
+// - Posicao ainda aberta nao e liquidada artificialmente e nao altera o capital realizado.
+// - Sem custos, corretagem, emolumentos, impostos ou slippage nesta versao.
+// - Usar no mesmo grafico/timeframe D do Script 1.
+// - Conectar as 9 fontes exatamente na ordem numerada 01..09; os nomes coincidem com os plots do Script 1.
+// ============================================================================
