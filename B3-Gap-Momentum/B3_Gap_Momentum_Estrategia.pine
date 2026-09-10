@@ -1,0 +1,1079 @@
+//@version=5
+// ============================================================================
+// B3 GAP MOMENTUM - CORE V29 - INTERFACE BT SEMANAL + PRECOS/DATAS
+// ============================================================================
+// FINALIDADE DESTA VERSAO
+// -----------------------
+// Este indicador e um scanner multiativo para 29 acoes da B3. Ele possui duas
+// camadas independentes de calculo:
+//
+// 1) GAP MOMENTUM DE PERRY J. KAUFMAN
+//    - classifica cada acao como ALTA, BAIXA ou N/D;
+//    - usa, por padrao, 41 pregoes de gaps e SMA de 15 periodos;
+//    - a classificacao depende SOMENTE da inclinacao da linha de sinal.
+//
+// 2) MOMENTUM DE PRECO
+//    - mede o retorno do preco mais recente contra o fechamento de N barras
+//      diarias atras;
+//    - usa, por padrao, 49 pregoes;
+//    - serve para ordenar as acoes da maior para a menor forca relativa.
+//
+// VISUALIZACOES
+// -------------
+// TOP 5:
+//    Primeiro filtra somente as acoes em ALTA pelo Gap Momentum. Depois ordena
+//    essas acoes pelo Momentum de preco e mostra as cinco melhores.
+//
+// RANKING COMPLETO:
+//    Ordena todas as 29 acoes por Momentum, independentemente de ALTA/BAIXA/N/D.
+//    A quarta coluna informa o estado do Gap Momentum e a linha recebe cor:
+//    verde = ALTA, vermelho = BAIXA, cinza = N/D.
+//
+// CARTEIRA SEMANAL (exibida junto do TOP 5):
+//    Mostra o ciclo de rebalanceamento ATUAL e o ANTERIOR, cada um com sua data e acao.
+//    O rebalanceamento programado ocorre uma vez por semana, no primeiro pregao B3
+//    disponivel da nova semana. Se segunda-feira for feriado, o evento ocorre no
+//    primeiro pregao seguinte.
+//    Excecao defensiva: se a acao ATUAL deixar de estar validamente em ALTA antes
+//    do proximo rebalanceamento, ela e substituida imediatamente pelo novo Top 1
+//    de Momentum entre as acoes em ALTA. Se nenhuma estiver em ALTA, vai para CAIXA.
+//    Se estiver em CAIXA, a reentrada ocorre no proximo rebalanceamento semanal.
+//
+// NENHUMA:
+//    Oculta todas as tabelas.
+//
+// TEMPO REAL
+// ----------
+// Os dados de cada ativo sao solicitados no timeframe diario com lookahead_off.
+// No candle diario em formacao, o close representa o ultimo preco disponivel no
+// momento da execucao do indicador. Portanto, ranking e Momentum podem mudar
+// durante o pregao. Isso e intencional nesta versao.
+//
+// IMPORTANTE SOBRE O GAP MOMENTUM
+// ------------------------------
+// Formula canonica utilizada:
+// Gap diario = abertura atual - fechamento anterior.
+// Gap Ratio  = 100 * soma(gaps positivos) / soma(|gaps negativos|).
+// Se a soma dos gaps negativos for zero, a convencao adotada e Gap Ratio = 1.0.
+// Linha de sinal = SMA do Gap Ratio.
+// SMA subindo  -> ALTA.
+// SMA caindo   -> BAIXA.
+// SMA igual    -> conserva o ultimo estado ALTA/BAIXA ja definido.
+//
+// Esta versao NAO usa a normalizacao alternativa 0..100.
+// ============================================================================
+// V27 mantem a correcao dos identificadores dos ativos, o overlay no grafico,
+// a paleta adaptativa e a margem superior de protecao. A tabela da carteira foi
+// simplificada para quatro linhas: rebalanceamento atual, acao atual,
+// rebalanceamento anterior e acao anterior.
+// chart.fg_color fornece uma cor de alto contraste com o fundo do grafico;
+// chart.bg_color informa o fundo escolhido pelo usuario no TradingView.
+// ticker.new() exige argumentos simple string; por isso nenhum nome obtido por
+// array.get() e enviado a ticker.new(). Os IDs customizados sao criados abaixo
+// usando tickers literais e, depois, podem ser selecionados dinamicamente pelo
+// request.security() porque dynamic_requests=true.
+//
+// O script e um indicador, e nao uma estrategia de ordens. dynamic_requests=true
+// permite fazer request.security() dinamicamente dentro do loop dos 29 ativos.
+indicator("B3 Gap Momentum - Core V29 - BT Interface 41/15", overlay = true, dynamic_requests = true, calc_bars_count = 3200)
+// ============================================================================
+// 1. PARAMETROS DO GAP MOMENTUM
+// ============================================================================
+// Nome do grupo exibido na aba Configuracoes > Entradas.
+const string GAP_GROUP = "1. Parametros - Gap Momentum"
+// Quantidade de gaps diarios usados na soma positiva e negativa.
+// Padrao solicitado: 41 pregoes.
+int GAP_PERIOD = input.int(41, "Periodo dos gaps", minval = 1, maxval = 250, step = 1, group = GAP_GROUP)
+// Quantidade de valores do Gap Ratio usados na SMA da linha de sinal.
+// Padrao solicitado: 15 periodos.
+int SIGNAL_PERIOD = input.int(15, "Periodo da linha de sinal (SMA)", minval = 1, maxval = 250, step = 1, group = GAP_GROUP)
+// ============================================================================
+// 2. PARAMETRO DO MOMENTUM DE PRECO
+// ============================================================================
+// Grupo do parametro de Momentum nas configuracoes.
+const string MOMENTUM_GROUP = "2. Parametros - Momentum"
+// Numero de barras diarias entre o preco atual e o preco-base do Momentum.
+// Exemplo: 49 significa close atual / close[49] - 1.
+// O "D" mostrado nas tabelas identifica que o calculo usa barras diarias/pregoes.
+int MOMENTUM_PERIOD = input.int(49, "Periodo do Momentum", minval = 1, maxval = 500, step = 1, group = MOMENTUM_GROUP)
+// ============================================================================
+// 3. SELETOR DE VISUALIZACAO
+// ============================================================================
+// Grupo responsavel exclusivamente pela escolha da tabela visivel.
+const string DISPLAY_GROUP = "3. Visualizacao - Tabelas"
+// Um unico seletor garante que as visualizacoes sejam mutuamente exclusivas.
+// TOP 5            -> cinco melhores por Momentum ENTRE as acoes em ALTA,
+//                     acompanhado da tabela de carteira semanal ATUAL/ANTERIOR.
+// RANKING COMPLETO -> todas as 29 por Momentum, com estado e cor.
+// NENHUMA          -> nenhuma tabela.
+string TABLE_VIEW = input.string("TOP 5", "Tabela exibida", options = ["TOP 5", "RANKING COMPLETO", "NENHUMA"], group = DISPLAY_GROUP)
+// Distancia vertical FIXA antes das tabelas ancoradas no topo.
+// O usuario solicitou 24% de espaco visual vazio. Essa faixa pertence
+// tecnicamente a geometria da tabela (limitacao do Pine), mas fica 100%
+// transparente e sem moldura/linhas, de modo que visualmente seja apenas grafico.
+const int TOP_TABLE_MARGIN_HEIGHT = 24
+// ============================================================================
+// 4. CONSTANTES DE ESTADO E DIAGNOSTICO
+// ============================================================================
+// Estados validos de tendencia. Usar +1/-1 deixa o significado explicito e
+// evita confundir BAIXA com um valor neutro.
+const int TREND_UP = 1
+const int TREND_DOWN = -1
+// Codigos de diagnostico do Gap Momentum.
+// DIAG_OK           -> calculo valido e estado disponivel.
+// DIAG_WARMUP       -> ainda nao existem barras suficientes para todo o calculo.
+// DIAG_NO_DIRECTION -> janela valida, mas ainda nunca houve inclinacao efetiva.
+// DIAG_DATA         -> deveria haver historico, mas ha dado necessario ausente.
+const int DIAG_OK = 0
+const int DIAG_WARMUP = 1
+const int DIAG_NO_DIRECTION = 2
+const int DIAG_DATA = 3
+// Sentinelas da carteira:
+// POSITION_CASH  -> carteira sem acao porque nao existe candidata em ALTA;
+// POSITION_UNSET -> historico ainda nao processou nenhum evento de carteira.
+const int POSITION_CASH = -1
+const int POSITION_UNSET = -2
+// ============================================================================
+// 4.1. PALETA ADAPTATIVA AO TEMA DO GRAFICO
+// ============================================================================
+// O TradingView disponibiliza duas cores do proprio grafico:
+// - chart.bg_color = cor de fundo configurada no grafico;
+// - chart.fg_color = cor de alto contraste calculada para esse fundo.
+//
+// Quando chart.fg_color e escuro (#0f0f0f), tratamos o grafico como tema claro.
+// Caso contrario, tratamos como tema escuro. A cor do texto acompanha
+// chart.fg_color, portanto fica escura no tema claro e clara no tema escuro.
+bool IS_LIGHT_THEME = chart.fg_color == #0f0f0f
+color TABLE_TEXT_COLOR = chart.fg_color
+// Fundos gerais das tabelas e cabecalhos.
+// Todas as cores VISIVEIS abaixo usam color.rgb() sem transparencia: os paineis
+// TOP 5, CARTEIRA e RANKING COMPLETO ficam 100% opacos.
+color TABLE_PANEL_BG = IS_LIGHT_THEME ? color.rgb(248, 248, 248) : color.rgb(12, 12, 12)
+color TABLE_HEADER_BG = IS_LIGHT_THEME ? color.rgb(226, 226, 226) : color.rgb(28, 28, 28)
+color TABLE_BORDER_COLOR = IS_LIGHT_THEME ? color.rgb(125, 125, 125) : color.rgb(88, 88, 88)
+// Cores das linhas de estado.
+// No tema escuro, ALTA usa um verde propositalmente bem mais fechado que nas
+// versoes anteriores. No tema claro, usamos tons claros para preservar contraste
+// com o texto escuro fornecido por chart.fg_color.
+color TABLE_UP_BG = IS_LIGHT_THEME ? color.rgb(190, 224, 198) : color.rgb(5, 50, 27)
+color TABLE_DOWN_BG = IS_LIGHT_THEME ? color.rgb(236, 196, 196) : color.rgb(72, 20, 24)
+color TABLE_ND_BG = IS_LIGHT_THEME ? color.rgb(222, 222, 222) : color.rgb(45, 45, 45)
+color TABLE_CASH_BG = IS_LIGHT_THEME ? color.rgb(214, 214, 214) : color.rgb(38, 38, 38)
+color TABLE_INFO_BG = IS_LIGHT_THEME ? color.rgb(232, 232, 232) : color.rgb(32, 32, 32)
+// O Pine nao oferece deslocamento vertical arbitrario para table.new(). Por isso,
+// usamos uma primeira linha de 24% totalmente transparente. Essa faixa e apenas
+// um ESPACADOR e nao faz parte visual do painel. As duas tabelas visiveis e suas
+// celulas sao 100% opacas; somente este espaco de afastamento permanece transparente.
+color TABLE_MARGIN_BG = color.new(chart.bg_color, 100)
+// ============================================================================
+// 5. UNIVERSO FIXO DE 29 ACOES B3
+// ============================================================================
+// O universo desta etapa ja foi filtrado anteriormente para:
+// - manter apenas tickers terminados em 3 ou 4;
+// - reduzir sobreposicoes economicas escolhidas nesta cesta;
+// - retirar os ativos qualitativamente excluidos durante a construcao.
+//
+// N deve sempre corresponder exatamente ao numero de nomes em NAMES.
+// ============================================================================
+// Quantidade total de ativos analisados.
+const int N = 29
+// Lista fixa dos nomes exibidos nas tabelas. A ordem original tambem e usada
+// como desempate quando dois ativos possuem exatamente o mesmo Momentum.
+var array<string> NAMES = array.from("ABEV3", "BBAS3", "BBDC3", "BBSE3", "CMIG4", "CSAN3", "CSMG3", "CSNA3", "PRIO3", "EGIE3", "EQTL3", "FLRY3", "GGBR3", "HYPE3", "IRBR3", "ITUB4", "JHSF3", "LREN3", "MULT3", "PETR4", "RADL3", "RAIL3", "RENT3", "SBSP3", "SUZB3", "TUPY3", "UGPA3", "VALE3", "WEGE3")
+// IDs customizados usados nos request.security().
+// IMPORTANTE: ticker.new() NAO aceita um ticker obtido de array.get() porque esse
+// valor e qualificado como series string. Cada chamada abaixo usa um literal, que
+// satisfaz a exigencia simple string e preserva session.regular + adjustment.splits.
+var array<string> REQUEST_TICKERS = array.new_string()
+if barstate.isfirst
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "ABEV3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "BBAS3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "BBDC3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "BBSE3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "CMIG4", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "CSAN3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "CSMG3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "CSNA3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "PRIO3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "EGIE3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "EQTL3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "FLRY3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "GGBR3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "HYPE3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "IRBR3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "ITUB4", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "JHSF3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "LREN3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "MULT3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "PETR4", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "RADL3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "RAIL3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "RENT3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "SBSP3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "SUZB3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "TUPY3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "UGPA3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "VALE3", session.regular, adjustment.splits))
+    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "WEGE3", session.regular, adjustment.splits))
+// Estado ALTA/BAIXA mais recente de cada ativo.
+// Quando o diagnostico nao e OK, o valor deste array nao deve ser usado sozinho.
+var array<int> TREND_STATES = array.new_int(N, 0)
+// Codigo que informa se o estado do ativo e valido ou se esta em N/D.
+var array<int> DIAG_CODES = array.new_int(N, DIAG_WARMUP)
+// Momentum de preco de cada ativo. Pode ser na se nao houver historico suficiente.
+var array<float> MOMENTUM_VALUES = array.new_float(N, na)
+// Abertura diaria e timestamp diario de cada ativo.
+// Estes dois arrays existem para a camada de execucao do backtest: uma decisao
+// semanal e executada somente na abertura do primeiro pregao B3 POSTERIOR a decisao.
+var array<float> DAILY_OPEN_VALUES = array.new_float(N, na)
+var array<int> DAILY_TIME_VALUES = array.new_int(N, na)
+// ============================================================================
+// 6. GAP MOMENTUM: CALCULO E CLASSIFICACAO
+// ============================================================================
+// Esta funcao e executada no contexto diario de CADA ativo, dentro de
+// request.security(). Ela retorna somente o que o restante do indicador usa:
+// estado de tendencia e codigo de diagnostico.
+//
+// Valores intermediarios como gapRatio e signalLine permanecem locais porque sao
+// necessarios para chegar ao estado, mas nao sao armazenados em arrays globais.
+// Isso remove codigo morto existente nas versoes anteriores.
+// ============================================================================
+f_gap_momentum_state() =>
+    // Um gap valido exige tanto a abertura atual quanto o fechamento anterior.
+    // No primeiro candle do historico, close[1] normalmente e na.
+    float gap = na(open) or na(close[1]) ? na : open - close[1]
+    // Se o gap for positivo, sua magnitude entra em gapUp; caso contrario, zero.
+    // Se o gap for negativo, sua magnitude positiva entra em gapDown.
+    // Quando gap e na, preservamos na para o diagnostico detectar dado ausente.
+    float gapUp = na(gap) ? na : math.max(gap, 0.0)
+    float gapDown = na(gap) ? na : math.max(-gap, 0.0)
+    // Soma deslizante dos gaps positivos e negativos na janela configurada.
+    float gapsUp = math.sum(gapUp, GAP_PERIOD)
+    float gapsDown = math.sum(gapDown, GAP_PERIOD)
+    // Conta quantos gaps validos existem exatamente nas ultimas GAP_PERIOD barras.
+    // A fonte do contador e sempre 0 ou 1, portanto a soma nunca depende de na.
+    float validGapCount = math.sum(na(gap) ? 0.0 : 1.0, GAP_PERIOD)
+    // A janela so e considerada completa quando TODAS as barras possuem gap valido.
+    // Isso impede que uma funcao que ignore na substitua silenciosamente a janela
+    // desejada por observacoes validas mais antigas.
+    bool gapWindowComplete = not na(validGapCount) and validGapCount == GAP_PERIOD
+    // Calcula o Gap Ratio somente com uma janela completa.
+    // A convencao mantida nesta estrategia define 1.0 se nao houver gaps negativos.
+    float gapRatio = na
+    if gapWindowComplete and not na(gapsUp) and not na(gapsDown)
+        gapRatio := gapsDown == 0.0 ? 1.0 : 100.0 * gapsUp / gapsDown
+    // Calcula a SMA em toda barra para manter o historico interno consistente.
+    float rawSignalLine = ta.sma(gapRatio, SIGNAL_PERIOD)
+    // Conta quantos Gap Ratios validos existem na janela da SMA.
+    float validRatioCount = math.sum(na(gapRatio) ? 0.0 : 1.0, SIGNAL_PERIOD)
+    // Exige SIGNAL_PERIOD Gap Ratios consecutivos e validos.
+    bool signalWindowComplete = not na(validRatioCount) and validRatioCount == SIGNAL_PERIOD
+    // A linha de sinal so passa a ser valida quando a janela inteira esta completa.
+    float signalLine = signalWindowComplete ? rawSignalLine : na
+    // Compara a linha de sinal atual com a anterior.
+    // +1 = inclinacao positiva; -1 = inclinacao negativa; 0 = sem nova direcao.
+    int directionNow = 0
+    if not na(signalLine) and not na(signalLine[1])
+        if signalLine > signalLine[1]
+            directionNow := TREND_UP
+        else if signalLine < signalLine[1]
+            directionNow := TREND_DOWN
+    // Busca o ultimo estado efetivamente definido. Quando a SMA fica horizontal,
+    // directionNow = 0 e o ultimo ALTA/BAIXA permanece ativo.
+    int trendState = ta.valuewhen(directionNow != 0, directionNow, 0)
+    // Numero minimo teorico de barras:
+    // - GAP_PERIOD gaps exigem um close anterior;
+    // - SIGNAL_PERIOD Gap Ratios formam a SMA;
+    // - mais 1 barra permite comparar signalLine com signalLine[1].
+    bool warmupReady = bar_index + 1 >= GAP_PERIOD + SIGNAL_PERIOD + 1
+    // Comecamos supondo calculo valido e substituimos pelo motivo de N/D quando
+    // alguma condicao necessaria ainda nao estiver satisfeita.
+    int diagnostic = DIAG_OK
+    // Antes do numero minimo teorico de barras, classificamos como warm-up.
+    if not warmupReady
+        diagnostic := DIAG_WARMUP
+    // Depois do warm-up, uma janela incompleta ou valor ausente e problema de dados.
+    else if not gapWindowComplete or not signalWindowComplete or na(gapRatio) or na(signalLine) or na(signalLine[1])
+        diagnostic := DIAG_DATA
+    // Se todos os dados estao validos, mas nunca houve inclinacao, ainda nao existe
+    // um estado ALTA/BAIXA a conservar.
+    else if na(trendState)
+        diagnostic := DIAG_NO_DIRECTION
+    // Somente estes dois valores sao consumidos fora da funcao.
+    [trendState, diagnostic]
+// ============================================================================
+// 7. MOMENTUM DE PRECO
+// ============================================================================
+// O Momentum e independente do estado de tendencia. Ele nao consulta o Gap Ratio,
+// a SMA nem TREND_STATES. A formula e somente retorno de preco em N barras diarias.
+// ============================================================================
+f_price_momentum() =>
+    // Valor padrao na enquanto o historico necessario nao estiver disponivel.
+    float result = na
+    // Evita divisao por zero e exige um preco-base valido N barras atras.
+    if not na(close) and not na(close[MOMENTUM_PERIOD]) and close > 0.0 and close[MOMENTUM_PERIOD] > 0.0
+        result := close / close[MOMENTUM_PERIOD] - 1.0
+    // Retorna o Momentum em forma decimal: 0.15 = +15%.
+    result
+// ============================================================================
+// 8. PAYLOAD UNICO POR ATIVO
+// ============================================================================
+// Agrupar estado, diagnostico e Momentum no mesmo request.security() evita fazer
+// duas ou tres requisicoes para o mesmo ticker/timeframe.
+// ============================================================================
+f_asset_payload() =>
+    // Calcula a classificacao do Gap Momentum no contexto diario do ativo.
+    [trendStateValue, diagnosticValue] = f_gap_momentum_state()
+    // Calcula separadamente o Momentum de preco do mesmo ativo.
+    float momentumValue = f_price_momentum()
+    // A abertura e o horario da barra diaria sao usados somente pela interface de
+    // execucao do backtest. Incluir tudo no mesmo payload evita request extra.
+    float dailyOpenValue = open
+    int dailyTimeValue = time
+    [trendStateValue, diagnosticValue, momentumValue, dailyOpenValue, dailyTimeValue]
+// ============================================================================
+// 9. COLETA DIARIA DOS 29 ATIVOS
+// ============================================================================
+// Cada ticker usa uma unica request.security() no timeframe D.
+//
+// session.regular:
+//    utiliza a sessao regular do ativo.
+//
+// adjustment.splits:
+//    ajusta desdobramentos/splits. Dividendos nao sao ajustados nesta versao.
+//
+// gaps_off:
+//    mantem a serie solicitada preenchida entre atualizacoes conforme a semantica
+//    do request.security().
+//
+// lookahead_off:
+//    impede acesso antecipado a valores futuros do timeframe solicitado.
+// ============================================================================
+for i = 0 to N - 1
+    // Seleciona um ID customizado que ja foi criado com ticker.new() a partir de
+    // um literal simple string. array.get() pode produzir series string aqui, mas
+    // request.security() aceita esse tipo porque dynamic_requests=true.
+    string assetTicker = array.get(REQUEST_TICKERS, i)
+    // Uma unica requisicao entrega scanner + dados de execucao do backtest.
+    [assetTrendState, assetDiagnostic, assetMomentum, assetDailyOpen, assetDailyTime] = request.security(assetTicker, "D", f_asset_payload(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = 3200)
+    // Se o request inteiro nao entregar diagnostico, tratamos o ativo como N/D.
+    // Isso evita que na escape para as regras de elegibilidade do TOP 5.
+    int safeDiagnostic = na(assetDiagnostic) ? DIAG_DATA : assetDiagnostic
+    // O estado numerico so e relevante quando safeDiagnostic == DIAG_OK.
+    // Zero funciona como valor neutro seguro quando o request nao trouxe estado.
+    int safeTrendState = na(assetTrendState) ? 0 : assetTrendState
+    // Atualiza os arrays centrais usados pelas duas visualizacoes.
+    array.set(TREND_STATES, i, safeTrendState)
+    array.set(DIAG_CODES, i, safeDiagnostic)
+    array.set(MOMENTUM_VALUES, i, assetMomentum)
+    array.set(DAILY_OPEN_VALUES, i, assetDailyOpen)
+    array.set(DAILY_TIME_VALUES, i, assetDailyTime)
+// ============================================================================
+// 10. FUNCOES AUXILIARES DE ESTADO E RANKING
+// ============================================================================
+// Converte estado/diagnostico em texto curto para a tabela completa.
+f_state_text(int trendState, int diagnostic) =>
+    string result = "N/D"
+    if diagnostic == DIAG_OK
+        if trendState == TREND_UP
+            result := "ALTA"
+        else if trendState == TREND_DOWN
+            result := "BAIXA"
+    result
+// Define a cor de fundo da LINHA INTEIRA no ranking completo.
+// Qualquer diagnostico diferente de OK e cinza, independentemente do estado salvo.
+f_state_bg(int trendState, int diagnostic) =>
+    color result = TABLE_ND_BG
+    if diagnostic == DIAG_OK
+        if trendState == TREND_UP
+            result := TABLE_UP_BG
+        else if trendState == TREND_DOWN
+            result := TABLE_DOWN_BG
+    result
+// Comparador unico usado pelos rankings.
+// Regras, nesta ordem:
+// 1) Momentum valido sempre vence Momentum N/D.
+// 2) Entre validos, o maior Momentum vence.
+// 3) Em empate exato, vence o menor indice original de NAMES.
+// 4) Entre dois N/D, tambem vence o menor indice original.
+//
+// O desempate explicito e necessario porque selection sort nao e um algoritmo
+// estavel; sem esta regra, swaps anteriores poderiam alterar a ordem dos empates.
+f_is_better_momentum(float candidateMomentum, int candidateIndex, float bestMomentum, int bestIndex) =>
+    bool candidateValid = not na(candidateMomentum)
+    bool bestValid = not na(bestMomentum)
+    bool result = false
+    // Um valor numerico sempre deve aparecer antes de N/D.
+    if candidateValid and not bestValid
+        result := true
+    // Com ambos validos, compara primeiro o valor e depois o indice de desempate.
+    else if candidateValid and bestValid
+        result := candidateMomentum > bestMomentum or (candidateMomentum == bestMomentum and candidateIndex < bestIndex)
+    // Com ambos N/D, usa somente a ordem fixa do universo.
+    else if not candidateValid and not bestValid
+        result := candidateIndex < bestIndex
+    result
+// ============================================================================
+// 11. FUNCOES DA CARTEIRA SEMANAL
+// ============================================================================
+// A carteira semanal utiliza a MESMA elegibilidade do TOP 5:
+// - diagnostico valido;
+// - tendencia ALTA;
+// - Momentum valido.
+//
+// A diferenca e temporal: o TOP 5 e uma fotografia em tempo real; a posicao da
+// carteira so pode mudar no rebalanceamento semanal.
+// ============================================================================
+// Retorna o indice da melhor acao elegivel no momento da chamada.
+// Se nenhuma das 29 estiver simultaneamente em ALTA e com Momentum valido,
+// retorna -1.
+f_best_high_momentum_index() =>
+    int bestIndex = -1
+    float bestMomentum = na
+    // Examina todo o universo, sem depender da ordem visual das tabelas.
+    for i = 0 to N - 1
+        int assetState = array.get(TREND_STATES, i)
+        int assetDiagnostic = array.get(DIAG_CODES, i)
+        float assetMomentum = array.get(MOMENTUM_VALUES, i)
+        // Uma acao so pode ser candidata da carteira se estiver validamente em ALTA.
+        bool eligible = assetDiagnostic == DIAG_OK and assetState == TREND_UP and not na(assetMomentum)
+        // Entre as elegiveis, aplica exatamente o mesmo desempate do ranking.
+        bool better = eligible and (bestIndex == -1 or f_is_better_momentum(assetMomentum, i, bestMomentum, bestIndex))
+        if better
+            bestIndex := i
+            bestMomentum := assetMomentum
+    bestIndex
+// Calcula a posicao GLOBAL de um ativo no ranking de Momentum das 29 acoes.
+// O ranking desta funcao nao filtra ALTA/BAIXA; ele serve apenas para informar,
+// na tabela da carteira, onde a posicao atual/anterior se encontra no universo.
+f_global_momentum_rank(int targetIndex) =>
+    int result = na
+    if targetIndex >= 0 and targetIndex < N
+        float targetMomentum = array.get(MOMENTUM_VALUES, targetIndex)
+        if not na(targetMomentum)
+            int rankValue = 1
+            // Cada ativo que for "melhor" segundo o comparador fica antes do alvo.
+            for i = 0 to N - 1
+                if i != targetIndex
+                    float otherMomentum = array.get(MOMENTUM_VALUES, i)
+                    if f_is_better_momentum(otherMomentum, i, targetMomentum, targetIndex)
+                        rankValue += 1
+            result := rankValue
+    result
+// ============================================================================
+// 12. REBALANCEAMENTO SEMANAL + REGRA DEFENSIVA DE SAIDA DE ALTA
+// ============================================================================
+// REGRA PROGRAMADA:
+// 1) Detectamos a mudanca da semana usando o calendario diario de PETR4.
+// 2) Uma segunda-feira sem pregao nao cria evento; o rebalanceamento acontece no
+//    primeiro pregao B3 seguinte.
+// 3) Nesse evento escolhemos o maior Momentum ENTRE as acoes validamente em ALTA.
+// 4) Se nenhuma estiver em ALTA, a posicao ATUAL passa explicitamente para CAIXA.
+// 5) Se a mesma acao continuar Top 1 elegivel, ela permanece por mais uma semana.
+// 6) Se outra a superar, a nova assume; o ciclo semanal anterior permanece registrado.
+//
+// EXCECAO DEFENSIVA INTRASSEMANAL:
+// 7) Entre rebalanceamentos, a carteira normalmente fica congelada.
+// 8) Porem, se a acao ATUAL deixar de estar validamente em ALTA (BAIXA ou N/D),
+//    ela sai imediatamente. O codigo procura o novo Top 1 atual entre as acoes em
+//    ALTA e troca para ele. Se nao houver nenhuma, a carteira vai para CAIXA.
+// 9) Uma carteira que ja esteja em CAIXA nao reentra no meio da semana; a reentrada
+//    ocorre apenas no proximo rebalanceamento semanal programado.
+// ============================================================================
+// PETR4 e usada somente como calendario de pregoes para detectar a primeira barra
+// efetivamente negociada de cada semana B3.
+string REBALANCE_CALENDAR_TICKER = ticker.new("BMFBOVESPA", "PETR4", session.regular, adjustment.splits)
+// Time zone fixa da B3 usada apenas para formatar as datas exibidas.
+const string B3_TIMEZONE = "America/Sao_Paulo"
+// Uma unica requisicao devolve dois horarios do calendario B3:
+// 1) time("W") = inicio logico da semana de negociacao;
+// 2) time      = abertura da barra diaria realmente negociada.
+// O segundo valor permite registrar a DATA REAL do rebalanceamento. Se a segunda
+// for feriado, a primeira barra diaria da semana sera terca (ou o proximo pregao).
+[b3WeekKey, b3TradingDayTime] = request.security(REBALANCE_CALENDAR_TICKER, "D", [time("W"), time], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = 3200)
+// Verdadeiro apenas na primeira atualizacao em que a serie B3 passa para uma nova
+// semana. Em caso de feriado de segunda, isso ocorre no primeiro pregao seguinte.
+bool newB3TradingWeek = not na(b3WeekKey) and (na(b3WeekKey[1]) or b3WeekKey != b3WeekKey[1])
+// Guarda as datas dos dois ultimos rebalanceamentos semanais efetivamente
+// processados. Saidas defensivas intrassemanais nao alteram estas datas, porque
+// nao sao rebalanceamentos programados.
+var int lastWeeklyRebalanceTime = na
+var int previousWeeklyRebalanceTime = na
+// Converte um timestamp para DD/MM/AAAA no fuso da B3.
+f_date_text(int timestampValue) =>
+    na(timestampValue) ? "N/D" : str.format_time(timestampValue, "dd/MM/yyyy", B3_TIMEZONE)
+// Estado persistente da carteira.
+// currentPositionIndex representa a posicao ativa no ciclo semanal atual.
+// previousWeeklyPositionIndex guarda a posicao que estava ativa imediatamente antes
+// do rebalanceamento semanal atual; ela permanece congelada durante toda a semana,
+// mesmo se houver uma troca defensiva intrassemanal.
+// Valores 0..N-1 representam uma acao do universo. POSITION_CASH representa caixa;
+// POSITION_UNSET representa estado ainda nao iniciado.
+var int currentPositionIndex = POSITION_UNSET
+var int previousWeeklyPositionIndex = POSITION_UNSET
+// ============================================================================
+// 12.1. INTERFACE SEMANAL EXCLUSIVA PARA O SCRIPT 2 / BACKTEST
+// ============================================================================
+// IMPORTANTE:
+// Estes dois estados pertencem SOMENTE ao canal de backtest. Eles sao atualizados
+// exclusivamente no rebalanceamento semanal programado. Portanto, uma troca
+// defensiva intrassemanal de currentPositionIndex NAO altera o que o Script 2 recebe.
+//
+// backtestWeeklyPositionIndex:
+//   0..N-1         -> indice da acao escolhida no rebalanceamento semanal;
+//   POSITION_CASH  -> decisao semanal foi permanecer/ir para CAIXA;
+//   POSITION_UNSET -> ainda nao ocorreu um rebalanceamento semanal processavel.
+//
+// backtestWeeklyEventTime:
+//   timestamp da barra diaria B3 em que a decisao semanal foi tomada. Ele muda em
+//   todo novo rebalanceamento, mesmo quando a mesma acao e escolhida novamente.
+var int backtestWeeklyPositionIndex = POSITION_UNSET
+var int backtestWeeklyEventTime = na
+
+// Execucao da decisao semanal. A decisao tomada no primeiro pregao da semana fica
+// pendente e so e transformada em entrada/saida na abertura do proximo pregao B3.
+// Isso evita usar o fechamento que participa do calculo do sinal como preco de
+// execucao conhecido antecipadamente.
+var int backtestPendingPositionIndex = POSITION_UNSET
+var int backtestPendingDecisionTime = na
+var int backtestHeldPositionIndex = POSITION_UNSET
+
+// Os campos abaixo sao EVENTOS: ficam preenchidos apenas na barra em que uma
+// entrada/saida realmente e executada. O Script 2 deve processar a barra quando
+// BT_TRADE_EVENT nao for na.
+float backtestEntryPriceEvent = na
+int backtestEntryTimeEvent = na
+int backtestExitPositionEvent = POSITION_UNSET
+float backtestExitPriceEvent = na
+int backtestExitTimeEvent = na
+int backtestTradeEventTime = na
+// ------------------------------
+// A) REBALANCEAMENTO PROGRAMADO
+// ------------------------------
+if newB3TradingWeek
+    // Antes de registrar o novo evento, desloca o ciclo semanal vigente para o
+    // historico ANTERIOR. Assim a data anterior e a acao anterior permanecem
+    // coerentes entre si durante toda a semana seguinte.
+    previousWeeklyRebalanceTime := lastWeeklyRebalanceTime
+    previousWeeklyPositionIndex := currentPositionIndex
+    // Registra a data REAL do primeiro pregao da semana em que o rebalanceamento
+    // atual foi executado. Se segunda-feira for feriado, esta data sera o primeiro
+    // pregao efetivamente recebido pelo calendario B3.
+    lastWeeklyRebalanceTime := b3TradingDayTime
+    // Melhor acao do instante: maior Momentum entre todas as que estao em ALTA.
+    int weeklyBestIndex = f_best_high_momentum_index()
+    // Se houver candidata, ela vira a posicao atual.
+    // Se nao houver nenhuma acao em ALTA com Momentum valido, a carteira vai para CAIXA.
+    if weeklyBestIndex != -1
+        currentPositionIndex := weeklyBestIndex
+        // Publica para o Script 2 SOMENTE a decisao tomada neste rebalanceamento.
+        backtestWeeklyPositionIndex := weeklyBestIndex
+    else
+        currentPositionIndex := POSITION_CASH
+        // CAIXA tambem e uma decisao semanal valida para o backtest.
+        backtestWeeklyPositionIndex := POSITION_CASH
+    // Identifica inequivocamente este evento semanal. Mesmo que a mesma acao seja
+    // escolhida em semanas consecutivas, este timestamp sera diferente.
+    backtestWeeklyEventTime := b3TradingDayTime
+
+    // Agenda a EXECUCAO do backtest para o primeiro pregao posterior.
+    // O sinal continua sendo exclusivamente semanal; isto apenas define quando o
+    // preco efetivamente negociavel sera capturado para entrada/saida.
+    backtestPendingPositionIndex := backtestWeeklyPositionIndex
+    backtestPendingDecisionTime := b3TradingDayTime
+
+// -----------------------------------------------------------------------------
+// A.1) EXECUCAO DA DECISAO SEMANAL NO PROXIMO PREGAO
+// -----------------------------------------------------------------------------
+// A execucao ocorre apenas depois da data da decisao. Se um ativo nao possuir uma
+// abertura nova nesse dia, a ordem permanece pendente ate existir preco valido.
+bool backtestHasPendingExecution = backtestPendingPositionIndex != POSITION_UNSET and not na(backtestPendingDecisionTime)
+bool backtestIsLaterTradingDay = not na(b3TradingDayTime) and b3TradingDayTime > backtestPendingDecisionTime
+
+if backtestHasPendingExecution and backtestIsLaterTradingDay
+    int desiredPosition = backtestPendingPositionIndex
+    int heldPosition = backtestHeldPositionIndex
+
+    // Uma repeticao semanal do mesmo ticker e uma nova DECISAO, mas nao gera
+    // venda/recompra nem altera preco/data da entrada original.
+    if heldPosition != POSITION_UNSET and desiredPosition == heldPosition
+        backtestPendingPositionIndex := POSITION_UNSET
+        backtestPendingDecisionTime := na
+
+    else if heldPosition == POSITION_UNSET and desiredPosition == POSITION_CASH
+        // Primeira decisao processavel pode ser CAIXA. Nao existe operacao.
+        backtestHeldPositionIndex := POSITION_CASH
+        backtestPendingPositionIndex := POSITION_UNSET
+        backtestPendingDecisionTime := na
+
+    else
+        bool exitRequired = heldPosition >= 0 and heldPosition < N
+        bool entryRequired = desiredPosition >= 0 and desiredPosition < N
+
+        float exitOpen = na
+        int exitDailyTime = na
+        float entryOpen = na
+        int entryDailyTime = na
+
+        // Evita qualquer acesso de array com sentinelas -1/-2.
+        if exitRequired
+            exitOpen := array.get(DAILY_OPEN_VALUES, heldPosition)
+            exitDailyTime := array.get(DAILY_TIME_VALUES, heldPosition)
+        if entryRequired
+            entryOpen := array.get(DAILY_OPEN_VALUES, desiredPosition)
+            entryDailyTime := array.get(DAILY_TIME_VALUES, desiredPosition)
+
+        // Exige barra diaria NOVA do proprio ativo para impedir uso de abertura
+        // carregada por gaps_off quando o ativo nao negociou naquele pregao.
+        bool exitReady = not exitRequired or (not na(exitOpen) and exitOpen > 0.0 and exitDailyTime == b3TradingDayTime)
+        bool entryReady = not entryRequired or (not na(entryOpen) and entryOpen > 0.0 and entryDailyTime == b3TradingDayTime)
+
+        if exitReady and entryReady
+            if exitRequired
+                backtestExitPositionEvent := heldPosition
+                backtestExitPriceEvent := exitOpen
+                backtestExitTimeEvent := b3TradingDayTime
+
+            if entryRequired
+                backtestEntryPriceEvent := entryOpen
+                backtestEntryTimeEvent := b3TradingDayTime
+                backtestHeldPositionIndex := desiredPosition
+            else
+                // desiredPosition == POSITION_CASH.
+                backtestHeldPositionIndex := POSITION_CASH
+
+            // Uma mudanca CAIXA->ACAO, ACAO->CAIXA ou ACAO->ACAO produz um evento.
+            backtestTradeEventTime := b3TradingDayTime
+            backtestPendingPositionIndex := POSITION_UNSET
+            backtestPendingDecisionTime := na
+
+// -----------------------------------------
+// B) SAIDA DEFENSIVA FORA DO REBALANCEAMENTO
+// -----------------------------------------
+// Esta verificacao roda em todas as atualizacoes. Ela NAO troca uma acao que continue
+// em ALTA apenas porque outra passou a ter Momentum maior; essa troca continua semanal.
+// A unica troca intrassemanal ocorre quando a posicao atual deixa de estar em ALTA.
+if not newB3TradingWeek and currentPositionIndex >= 0 and currentPositionIndex < N
+    int heldState = array.get(TREND_STATES, currentPositionIndex)
+    int heldDiagnostic = array.get(DIAG_CODES, currentPositionIndex)
+    // "Continuar em ALTA" exige diagnostico OK e estado TREND_UP.
+    // BAIXA, N/D ou falha de dados sao tratados como saida da condicao de ALTA.
+    bool heldStillHigh = heldDiagnostic == DIAG_OK and heldState == TREND_UP
+    if not heldStillHigh
+        // Uma troca defensiva altera apenas a posicao ATUAL. O registro do ciclo
+        // semanal ANTERIOR permanece congelado e nao e sobrescrito aqui.
+        // Procura imediatamente o novo melhor Momentum entre as acoes em ALTA.
+        int replacementIndex = f_best_high_momentum_index()
+        // Se houver substituta, troca para ela. Se nao houver, fica em CAIXA.
+        if replacementIndex != -1
+            currentPositionIndex := replacementIndex
+        else
+            currentPositionIndex := POSITION_CASH
+// ============================================================================
+// 13. TABELA TOP 5: MELHORES MOMENTUM SOMENTE ENTRE ACOES EM ALTA
+// ============================================================================
+// Esta e a regra central do TOP 5:
+//
+// A) Primeiro, a acao precisa estar com DIAG_OK e TREND_UP.
+// B) Depois, precisa ter Momentum valido.
+// C) Somente entre as elegiveis, escolhemos os cinco maiores Momentums.
+//
+// A tabela e uma fotografia EM TEMPO REAL e pode mudar durante o pregao.
+// Ela nao provoca troca apenas por mudanca de ranking. A carteira muda no
+// rebalanceamento semanal ou, excepcionalmente, quando a acao ATUAL deixa de ALTA.
+// ============================================================================
+// Referencia persistente da tabela TOP 5.
+var table top5Table = na
+// Desenha o TOP 5 apenas quando essa visualizacao estiver selecionada.
+if barstate.islast
+    if TABLE_VIEW != "TOP 5"
+        if not na(top5Table)
+            table.delete(top5Table)
+            top5Table := na
+    else
+        // Quatro colunas: ranking entre as elegiveis em ALTA, ticker, Momentum e estado.
+        // Sete linhas: margem transparente + cabecalho + no maximo cinco acoes.
+        if na(top5Table)
+            // O fundo-base precisa continuar transparente somente para permitir
+            // o ESPACADOR de 24%. Todas as linhas visiveis recebem fundos opacos
+            // individualmente abaixo dessa margem.
+            top5Table := table.new(position.top_left, 4, 7, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
+            // A linha de margem e fundida para eliminar divisorias verticais
+            // atravessando o espaco vazio de 24%.
+            table.merge_cells(top5Table, 0, 0, 3, 0)
+        // Limpa somente a parte VISIVEL da tabela. A linha 0 e reservada
+        // exclusivamente ao espaco transparente e nunca recebe fundo de painel.
+        for clearRow = 1 to 6
+            for clearCol = 0 to 3
+                table.cell(top5Table, clearCol, clearRow, "", bgcolor = TABLE_PANEL_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        // Linha 0 = 24% de vazio real aos olhos: sem fundo, texto, moldura ou
+        // subdivisoes. O primeiro elemento visivel passa a ser o cabecalho da linha 1.
+        table.cell(top5Table, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT)
+        // Cabecalho dinamico do periodo do Momentum.
+        string momentumHeader = "MOMENTUM " + str.tostring(MOMENTUM_PERIOD) + "D"
+        table.cell(top5Table, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(top5Table, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(top5Table, 2, 1, momentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(top5Table, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        // Impede repeticao do mesmo ticker nas cinco passagens.
+        array<bool> usedTop5 = array.new_bool(N, false)
+        // Seleciona as cinco melhores acoes em ALTA, uma por passagem.
+        for rankPos = 0 to 4
+            int bestIndex = -1
+            float bestMomentum = na
+            // Em cada passagem, procura a melhor acao elegivel ainda nao usada.
+            for i = 0 to N - 1
+                int assetState = array.get(TREND_STATES, i)
+                int assetDiagnostic = array.get(DIAG_CODES, i)
+                float assetMomentum = array.get(MOMENTUM_VALUES, i)
+                bool eligibleForTop5 = assetDiagnostic == DIAG_OK and assetState == TREND_UP and not na(assetMomentum) and not array.get(usedTop5, i)
+                bool betterMomentum = eligibleForTop5 and (bestIndex == -1 or f_is_better_momentum(assetMomentum, i, bestMomentum, bestIndex))
+                if betterMomentum
+                    bestIndex := i
+                    bestMomentum := assetMomentum
+            // Se nao existir candidato para uma determinada linha, ela fica vazia.
+            if bestIndex != -1
+                array.set(usedTop5, bestIndex, true)
+                string rankText = str.tostring(rankPos + 1) + "º"
+                // Como toda acao do TOP 5 obrigatoriamente esta em ALTA, usamos a
+                // mesma cor verde de estado na linha inteira.
+                color rowBg = f_state_bg(TREND_UP, DIAG_OK)
+                table.cell(top5Table, 0, rankPos + 2, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(top5Table, 1, rankPos + 2, array.get(NAMES, bestIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(top5Table, 2, rankPos + 2, str.tostring(bestMomentum * 100.0, "#.##") + "%", bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(top5Table, 3, rankPos + 2, "ALTA", bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+// ============================================================================
+// 14. TABELA PEQUENA DA CARTEIRA: REBALANCEAMENTO ATUAL E ANTERIOR
+// ============================================================================
+// Esta tabela aparece JUNTO do TOP 5 e desaparece nas outras visualizacoes.
+//
+// O painel possui EXATAMENTE quatro linhas:
+// 1) REBALANCEAMENTO ATUAL + data real do ultimo evento semanal programado;
+// 2) acao atualmente mantida + rank global atual + Momentum atual + estado atual;
+// 3) REBALANCEAMENTO ANTERIOR + data real do evento semanal anterior;
+// 4) acao do ciclo semanal anterior + rank global atual + Momentum atual + estado atual.
+//
+// Nao existe mais a coluna POSICAO. O estado ALTA/BAIXA/N/D permanece.
+// Ranking, Momentum e estado das linhas de acao usam os dados mais recentes.
+// A identidade da linha ANTERIOR fica congelada ate o proximo rebalanceamento semanal.
+// ============================================================================
+var table portfolioTable = na
+if barstate.islast
+    // A tabela de carteira so acompanha a visualizacao TOP 5.
+    if TABLE_VIEW != "TOP 5"
+        if not na(portfolioTable)
+            table.delete(portfolioTable)
+            portfolioTable := na
+    else
+        // Quatro colunas e quatro linhas, sem cabecalho separado.
+        // As linhas de data identificam o bloco; as linhas de acao mantem
+        // RANK | ACAO | MOMENTUM | ESTADO.
+        if na(portfolioTable)
+            portfolioTable := table.new(position.top_right, 4, 4, bgcolor = TABLE_PANEL_BG, frame_color = TABLE_BORDER_COLOR, frame_width = 1, border_color = TABLE_BORDER_COLOR, border_width = 1)
+        // Limpa a tabela inteira antes de redesenhar.
+        for clearRow = 0 to 3
+            for clearCol = 0 to 3
+                table.cell(portfolioTable, clearCol, clearRow, "", bgcolor = TABLE_PANEL_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        string portfolioMomentumHeader = "MOMENTUM " + str.tostring(MOMENTUM_PERIOD) + "D"
+        color rebalanceBg = TABLE_INFO_BG
+        // --------------------------------------------------------------------
+        // LINHA 1: data do REBALANCEAMENTO ATUAL.
+        // --------------------------------------------------------------------
+        string currentRebalanceText = f_date_text(lastWeeklyRebalanceTime)
+        table.cell(portfolioTable, 0, 0, "REBAL. ATUAL", bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(portfolioTable, 1, 0, currentRebalanceText, bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(portfolioTable, 2, 0, "RANK / " + portfolioMomentumHeader, bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(portfolioTable, 3, 0, "ESTADO", bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        // --------------------------------------------------------------------
+        // LINHA 2: acao ATUAL.
+        // Mantem rank, ticker, Momentum e estado. Remove apenas a antiga coluna
+        // POSICAO, pois o bloco acima ja informa que este e o ciclo ATUAL.
+        // --------------------------------------------------------------------
+        if currentPositionIndex >= 0 and currentPositionIndex < N
+            int currentRank = f_global_momentum_rank(currentPositionIndex)
+            float currentMomentum = array.get(MOMENTUM_VALUES, currentPositionIndex)
+            int currentState = array.get(TREND_STATES, currentPositionIndex)
+            int currentDiagnostic = array.get(DIAG_CODES, currentPositionIndex)
+            string currentRankText = na(currentRank) ? "N/D" : str.tostring(currentRank) + "º"
+            string currentMomentumText = na(currentMomentum) ? "N/D" : str.tostring(currentMomentum * 100.0, "#.##") + "%"
+            string currentStateText = f_state_text(currentState, currentDiagnostic)
+            color currentBg = f_state_bg(currentState, currentDiagnostic)
+            table.cell(portfolioTable, 0, 1, currentRankText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 1, 1, array.get(NAMES, currentPositionIndex), bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 2, 1, currentMomentumText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 3, 1, currentStateText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        else if currentPositionIndex == POSITION_CASH
+            color cashBg = TABLE_CASH_BG
+            table.cell(portfolioTable, 0, 1, "-", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 1, 1, "CAIXA", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 2, 1, "-", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 3, 1, "CAIXA", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        else
+            color emptyBg = TABLE_ND_BG
+            table.cell(portfolioTable, 0, 1, "-", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 1, 1, "N/D", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 2, 1, "-", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 3, 1, "N/D", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        // --------------------------------------------------------------------
+        // LINHA 3: data do REBALANCEAMENTO ANTERIOR.
+        // --------------------------------------------------------------------
+        string previousRebalanceText = f_date_text(previousWeeklyRebalanceTime)
+        table.cell(portfolioTable, 0, 2, "REBAL. ANTERIOR", bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(portfolioTable, 1, 2, previousRebalanceText, bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(portfolioTable, 2, 2, "RANK / " + portfolioMomentumHeader, bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(portfolioTable, 3, 2, "ESTADO", bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        // --------------------------------------------------------------------
+        // LINHA 4: acao do ciclo semanal ANTERIOR.
+        // O rank, o Momentum e o estado mostrados sao os valores ATUAIS dessa
+        // acao, para permitir comparar onde ela se encontra hoje.
+        // --------------------------------------------------------------------
+        if previousWeeklyPositionIndex >= 0 and previousWeeklyPositionIndex < N
+            int previousRank = f_global_momentum_rank(previousWeeklyPositionIndex)
+            float previousMomentum = array.get(MOMENTUM_VALUES, previousWeeklyPositionIndex)
+            int previousState = array.get(TREND_STATES, previousWeeklyPositionIndex)
+            int previousDiagnostic = array.get(DIAG_CODES, previousWeeklyPositionIndex)
+            string previousRankText = na(previousRank) ? "N/D" : str.tostring(previousRank) + "º"
+            string previousMomentumText = na(previousMomentum) ? "N/D" : str.tostring(previousMomentum * 100.0, "#.##") + "%"
+            string previousStateText = f_state_text(previousState, previousDiagnostic)
+            color previousBg = f_state_bg(previousState, previousDiagnostic)
+            table.cell(portfolioTable, 0, 3, previousRankText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 1, 3, array.get(NAMES, previousWeeklyPositionIndex), bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 2, 3, previousMomentumText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 3, 3, previousStateText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        else if previousWeeklyPositionIndex == POSITION_CASH
+            color cashBg = TABLE_CASH_BG
+            table.cell(portfolioTable, 0, 3, "-", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 1, 3, "CAIXA", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 2, 3, "-", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 3, 3, "CAIXA", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        else
+            color emptyBg = TABLE_ND_BG
+            table.cell(portfolioTable, 0, 3, "-", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 1, 3, "N/D", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 2, 3, "-", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 3, 3, "N/D", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+// ============================================================================
+// 15. RANKING COMPLETO: 29 ACOES ORDENADAS POR MOMENTUM
+// ============================================================================
+// Nesta visualizacao NAO existe filtro de tendencia:
+// - todas as 29 acoes participam;
+// - Momentum maior ocupa posicao melhor;
+// - Momentums N/D ficam depois de todos os valores numericos;
+// - ALTA/BAIXA/N/D e apenas informacao visual na quarta coluna.
+//
+// Para manter size.normal e reduzir altura, o ranking e dividido visualmente:
+// tabela 1 = posicoes  1 a 10;
+// tabela 2 = posicoes 11 a 20;
+// tabela 3 = posicoes 21 a 29.
+// ============================================================================
+// Referencias persistentes das tres partes visuais do mesmo ranking.
+var table momentumFull1 = na
+var table momentumFull2 = na
+var table momentumFull3 = na
+// Atualiza as tabelas somente no ultimo ponto da serie.
+if barstate.islast
+    // Se RANKING COMPLETO nao estiver selecionado, apaga os tres blocos.
+    if TABLE_VIEW != "RANKING COMPLETO"
+        if not na(momentumFull1)
+            table.delete(momentumFull1)
+            momentumFull1 := na
+        if not na(momentumFull2)
+            table.delete(momentumFull2)
+            momentumFull2 := na
+        if not na(momentumFull3)
+            table.delete(momentumFull3)
+            momentumFull3 := na
+    // Caso a visualizacao completa esteja ativa, cria/atualiza os tres blocos.
+    else
+        // Cada bloco recebe uma margem transparente no topo. Depois dela, tabela 1 e 2
+        // possuem cabecalho + 10 linhas; tabela 3 possui cabecalho + 9 linhas.
+        if na(momentumFull1)
+            momentumFull1 := table.new(position.top_left, 4, 12, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
+            table.merge_cells(momentumFull1, 0, 0, 3, 0)
+        if na(momentumFull2)
+            momentumFull2 := table.new(position.top_center, 4, 12, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
+            table.merge_cells(momentumFull2, 0, 0, 3, 0)
+        if na(momentumFull3)
+            momentumFull3 := table.new(position.top_right, 4, 11, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
+            table.merge_cells(momentumFull3, 0, 0, 3, 0)
+        // Cria um vetor de indices [0..28]. Ordenamos indices, e nao NAMES, para
+        // manter todos os arrays centrais sincronizados pelo mesmo indice do ativo.
+        array<int> rankIndices = array.new_int(N, 0)
+        for i = 0 to N - 1
+            array.set(rankIndices, i, i)
+        // Selection sort decrescente por Momentum.
+        // Para apenas 29 elementos, o custo e pequeno. O comparador explicito
+        // garante desempate por indice original e coloca N/D no final.
+        for rankPos = 0 to N - 2
+            int bestPos = rankPos
+            int bestIndex = array.get(rankIndices, bestPos)
+            float bestMomentum = array.get(MOMENTUM_VALUES, bestIndex)
+            // Procura, no restante do vetor, algum candidato melhor que o atual.
+            for candidatePos = rankPos + 1 to N - 1
+                int candidateIndex = array.get(rankIndices, candidatePos)
+                float candidateMomentum = array.get(MOMENTUM_VALUES, candidateIndex)
+                // Usa a mesma regra deterministica de comparacao do TOP 5.
+                bool candidateIsBetter = f_is_better_momentum(candidateMomentum, candidateIndex, bestMomentum, bestIndex)
+                // Se encontrou candidato melhor, ele vira o melhor da passagem.
+                if candidateIsBetter
+                    bestPos := candidatePos
+                    bestIndex := candidateIndex
+                    bestMomentum := candidateMomentum
+            // Coloca o melhor ativo encontrado na posicao corrente do ranking.
+            if bestPos != rankPos
+                int displacedIndex = array.get(rankIndices, rankPos)
+                array.set(rankIndices, rankPos, bestIndex)
+                array.set(rankIndices, bestPos, displacedIndex)
+        // Cabecalho acompanha automaticamente o periodo configurado do Momentum.
+        string fullMomentumHeader = "MOMENTUM " + str.tostring(MOMENTUM_PERIOD) + "D"
+        // Mantem os tres blocos alinhados. Como a linha 0 foi fundida em cada
+        // tabela, nao existem divisorias verticais dentro do vazio de 24%.
+        table.cell(momentumFull1, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT)
+        table.cell(momentumFull2, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT)
+        table.cell(momentumFull3, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT)
+        // Cabecalho do primeiro bloco: ranking 1 a 10.
+        table.cell(momentumFull1, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull1, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull1, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull1, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        // Cabecalho do segundo bloco: ranking 11 a 20.
+        table.cell(momentumFull2, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull2, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull2, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull2, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        // Cabecalho do terceiro bloco: ranking 21 a 29.
+        table.cell(momentumFull3, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull3, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull3, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(momentumFull3, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        // Percorre o vetor JA ORDENADO e desenha cada uma das 29 posicoes.
+        for rankPos = 0 to N - 1
+            // Indice original do ativo que ocupa esta posicao do ranking.
+            int assetIndex = array.get(rankIndices, rankPos)
+            // Recupera Momentum, tendencia e diagnostico pelo mesmo indice.
+            float assetMomentum = array.get(MOMENTUM_VALUES, assetIndex)
+            int assetState = array.get(TREND_STATES, assetIndex)
+            int assetDiagnostic = array.get(DIAG_CODES, assetIndex)
+            // Prepara os textos mostrados ao usuario.
+            string rankText = str.tostring(rankPos + 1) + "º"
+            string momentumText = na(assetMomentum) ? "N/D" : str.tostring(assetMomentum * 100.0, "#.##") + "%"
+            string stateText = f_state_text(assetState, assetDiagnostic)
+            // A linha inteira recebe a cor correspondente ao estado do Gap Momentum.
+            color rowBg = f_state_bg(assetState, assetDiagnostic)
+            // Posicoes 1..10 vao para o bloco da esquerda.
+            if rankPos < 10
+                int targetRow = rankPos + 2
+                table.cell(momentumFull1, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull1, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull1, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull1, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            // Posicoes 11..20 vao para o bloco central.
+            else if rankPos < 20
+                int targetRow = rankPos - 8
+                table.cell(momentumFull2, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull2, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull2, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull2, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            // Posicoes 21..29 vao para o bloco da direita.
+            else
+                int targetRow = rankPos - 18
+                table.cell(momentumFull3, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull3, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull3, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull3, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+// ============================================================================
+// 16. INTERFACE INVISIVEL PARA O SCRIPT 2 / BACKTEST
+// ============================================================================
+// Estes plots nao aparecem visualmente. Sao os unicos canais que o Script 2 precisa
+// consumir. Todos sao numericos porque input.source() trabalha com series float.
+//
+// 1) DECISAO SEMANAL
+// BT_WEEKLY_POSITION: 0..28 = ticker decidido; -1 = CAIXA; -2 = nao iniciado.
+// BT_WEEKLY_EVENT: timestamp do primeiro pregao B3 em que a decisao foi tomada.
+//
+// 2) EXECUCAO DA DECISAO
+// BT_TRADE_POSITION: posicao realmente carregada apos a ultima execucao.
+// BT_TRADE_EVENT: timestamp somente na barra em que houve entrada/saida; senao na.
+// BT_ENTRY_PRICE / BT_ENTRY_TIME: preenchidos somente quando houve nova compra.
+// BT_EXIT_POSITION / BT_EXIT_PRICE / BT_EXIT_TIME: preenchidos somente quando houve
+// venda da posicao anterior. BT_EXIT_POSITION identifica qual ticker foi encerrado.
+//
+// REGRA DE PRECO:
+// Para reproducao historica consistente, conectar Script 1 e Script 2 em grafico D.
+// A decisao usa o rebalanceamento semanal ja existente. A compra/venda do canal de
+// backtest e executada pela abertura diaria do primeiro pregao B3 POSTERIOR.
+// Mudancas defensivas intrassemanais de currentPositionIndex nunca entram neste canal.
+plot(backtestWeeklyPositionIndex, "BT_WEEKLY_POSITION", display = display.none, editable = false)
+plot(backtestWeeklyEventTime, "BT_WEEKLY_EVENT", display = display.none, editable = false)
+plot(backtestHeldPositionIndex, "BT_TRADE_POSITION", display = display.none, editable = false)
+plot(backtestTradeEventTime, "BT_TRADE_EVENT", display = display.none, editable = false)
+plot(backtestEntryPriceEvent, "BT_ENTRY_PRICE", display = display.none, editable = false)
+plot(backtestEntryTimeEvent, "BT_ENTRY_TIME", display = display.none, editable = false)
+plot(backtestExitPositionEvent, "BT_EXIT_POSITION", display = display.none, editable = false)
+plot(backtestExitPriceEvent, "BT_EXIT_PRICE", display = display.none, editable = false)
+plot(backtestExitTimeEvent, "BT_EXIT_TIME", display = display.none, editable = false)
+// ============================================================================
+// 17. RESUMO DA ARQUITETURA - V29 + INTERFACE BT
+// ============================================================================
+// ENTRADAS:
+// - Gap Momentum: GAP_PERIOD = 41 por padrao.
+// - Linha de sinal: SIGNAL_PERIOD = 15 por padrao.
+// - Momentum: MOMENTUM_PERIOD = 49 por padrao.
+// - Visualizacao: TOP 5 / RANKING COMPLETO / NENHUMA.
+// - Margem superior transparente protege as tabelas dos dados nativos do TradingView.
+//
+// TOP 5:
+// - fotografia em tempo real;
+// - exige DIAG_OK + TREND_UP + Momentum valido;
+// - ordena somente as elegiveis por Momentum;
+// - mostra no maximo cinco;
+// - agora inclui a coluna ESTADO.
+//
+// CARTEIRA SEMANAL:
+// - aparece junto do TOP 5;
+// - usa quatro linhas: REBAL. ATUAL, acao atual, REBAL. ANTERIOR, acao anterior;
+// - removeu a antiga coluna POSICAO e manteve RANK, ACAO, MOMENTUM e ESTADO;
+// - informa as datas REAIS dos dois ultimos rebalanceamentos semanais;
+// - rebalanceia apenas na primeira barra semanal efetivamente negociada na B3;
+// - segunda-feira feriado transfere automaticamente o evento para o proximo
+//   primeiro pregao disponivel;
+// - entre rebalanceamentos, a posicao fica congelada enquanto continuar em ALTA;
+// - no novo rebalanceamento, escolhe o Top 1 de Momentum entre as acoes em ALTA;
+// - se a mesma continuar Top 1 elegivel, permanece por mais uma semana;
+// - se outra a superar, a nova assume; o ciclo semanal anterior permanece registrado;
+// - se nenhuma estiver elegivel no rebalanceamento, a posicao ATUAL vira CAIXA;
+// - se a posicao atual sair de ALTA no meio da semana, troca imediatamente para
+//   o novo Top 1 em ALTA; se nao houver substituta, vai para CAIXA;
+// - estando em CAIXA, a reentrada ocorre apenas no proximo rebalanceamento semanal;
+// - rank, Momentum e estado das acoes mostradas usam os valores MAIS RECENTES.
+//
+// RANKING COMPLETO:
+// - inclui as 29 acoes;
+// - ordena por Momentum sem filtro de tendencia;
+// - coloca Momentum N/D no final;
+// - desempata explicitamente pela ordem original do universo;
+// - informa ALTA/BAIXA/N/D e colore a linha inteira.
+//
+// CONTROLE DE TEMPO:
+// - PETR4 e usada somente como calendario B3 do rebalanceamento;
+// - request.security(..., "D", [time("W"), time]) detecta a mudanca de semana
+//   e registra a data diaria efetivamente negociada no feed B3;
+// - a carteira nao troca no meio da semana por simples mudanca de ranking;
+// - a unica troca intrassemanal e defensiva, quando a posicao atual deixa de ALTA.
+//
+// INTERFACE PARA O SCRIPT 2:
+// - BT_WEEKLY_POSITION publica somente a decisao do rebalanceamento semanal;
+// - BT_WEEKLY_EVENT identifica cada novo rebalanceamento pela data B3 efetiva;
+// - a decisao semanal e executada na abertura do primeiro pregao B3 posterior;
+// - BT_ENTRY_PRICE/BT_ENTRY_TIME entregam os dados da nova entrada;
+// - BT_EXIT_POSITION/BT_EXIT_PRICE/BT_EXIT_TIME entregam os dados da saida;
+// - BT_TRADE_EVENT identifica somente execucoes reais (nao repeticoes do mesmo ticker);
+// - trocas defensivas intrassemanais nao alteram nenhum dos dois canais;
+// - o Script 2 sera responsavel por obter os precos e calcular lucro/prejuizo.
+//
+// AINDA NAO EXISTEM:
+// - ordens reais de compra/venda;
+// - capital, quantidade de acoes ou tamanho de posicao;
+// - custos, corretagem, slippage;
+// - backtest de rentabilidade da carteira.
+// ============================================================================
