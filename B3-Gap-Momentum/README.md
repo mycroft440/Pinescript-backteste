@@ -9,7 +9,7 @@ Conjunto de dois scripts Pine Script para selecionar semanalmente uma acao da B3
 
 ## Como funciona a estrategia
 
-O Script 1 acompanha um universo fixo de 29 acoes da B3.
+O Script 1 acompanha um universo fixo de 40 acoes da B3.
 
 ### 1. Gap Momentum
 
@@ -48,7 +48,7 @@ No rebalanceamento semanal:
 - se nenhuma estiver elegivel, a decisao e CAIXA;
 - se a mesma acao continuar sendo Top 1, a decisao semanal e registrada novamente, mas nao ha venda e recompra artificial no backtest.
 
-O painel operacional do Script 1 possui uma regra defensiva intrassemanal quando a acao deixa de estar em ALTA. Essa troca defensiva **nao e enviada ao Script 2**. O backtest recebe somente as decisoes semanais.
+O painel operacional do Script 1 possui uma regra defensiva intrassemanal quando a acao deixa de estar em ALTA. Quando essa troca defensiva e efetivamente executada, o Script 1 tambem publica os canais de entrada/saida usados pelo Script 2, portanto o backtest contabiliza a operacao. A troca defensiva nao altera `BT_WEEKLY_POSITION`, que continua representando somente o rebalanceamento semanal.
 
 ### 4. Preco usado no backtest
 
