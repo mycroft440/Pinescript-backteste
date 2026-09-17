@@ -1,10 +1,10 @@
 //@version=5
 // ============================================================================
-// B3 GAP MOMENTUM - CORE V29 - INTERFACE BT SEMANAL + PRECOS/DATAS
+// B3 GAP MOMENTUM - CORE V47 - PROXIMO REBALANCEAMENTO SOMENTE APOS SEXTA
 // ============================================================================
 // FINALIDADE DESTA VERSAO
 // -----------------------
-// Este indicador e um scanner multiativo para 29 acoes da B3. Ele possui duas
+// Este indicador e um scanner multiativo para 40 acoes da B3. Ele possui duas
 // camadas independentes de calculo:
 //
 // 1) GAP MOMENTUM DE PERRY J. KAUFMAN
@@ -25,19 +25,24 @@
 //    essas acoes pelo Momentum de preco e mostra as cinco melhores.
 //
 // RANKING COMPLETO:
-//    Ordena todas as 29 acoes por Momentum, independentemente de ALTA/BAIXA/N/D.
+//    Ordena todas as 40 acoes por Momentum, independentemente de ALTA/BAIXA/N/D.
 //    A quarta coluna informa o estado do Gap Momentum e a linha recebe cor:
 //    verde = ALTA, vermelho = BAIXA, cinza = N/D.
 //
-// CARTEIRA SEMANAL (exibida junto do TOP 5):
-//    Mostra o ciclo de rebalanceamento ATUAL e o ANTERIOR, cada um com sua data e acao.
-//    O rebalanceamento programado ocorre uma vez por semana, no primeiro pregao B3
-//    disponivel da nova semana. Se segunda-feira for feriado, o evento ocorre no
-//    primeiro pregao seguinte.
-//    Excecao defensiva: se a acao ATUAL deixar de estar validamente em ALTA antes
-//    do proximo rebalanceamento, ela e substituida imediatamente pelo novo Top 1
-//    de Momentum entre as acoes em ALTA. Se nenhuma estiver em ALTA, vai para CAIXA.
-//    Se estiver em CAIXA, a reentrada ocorre no proximo rebalanceamento semanal.
+// GERENCIAMENTO DE CARTEIRA (exibido junto do TOP 5):
+//    Mostra POSICAO ATUAL e POSICAO ANTERIOR com dados vivos.
+//    A tabela sempre exibe REBALANCEAMENTO ATUAL e REBALANCEAMENTO ANTERIOR.
+//    PROXIMO REBALANCEAMENTO somente aparece depois do fechamento confirmado da sexta-feira
+//    e permanece visivel, com data e acao congeladas, ate virar REBALANCEAMENTO ATUAL.
+//    A acao da proxima semana e PRE-SELECIONADA no fechamento confirmado da sexta-feira.
+//    A troca semanal e EXECUTADA na abertura do primeiro pregao B3 da nova semana.
+//    Se segunda-feira nao tiver pregao, a selecao permanece congelada e a execucao
+//    espera terca-feira, quarta-feira ou o primeiro pregao efetivamente observado.
+//    Excecao defensiva: se a acao ATUAL terminar qualquer outro pregao sem estar
+//    validamente em ALTA (BAIXA ou N/D), ela e substituida NO FECHAMENTO desse mesmo
+//    pregao pelo novo Top 1 de Momentum entre as acoes em ALTA. Se nenhuma estiver
+//    elegivel, vai para CAIXA. Mudancas intradiarias que se revertem antes do fechamento
+//    nao provocam troca.
 //
 // NENHUMA:
 //    Oculta todas as tabelas.
@@ -54,7 +59,8 @@
 // Formula canonica utilizada:
 // Gap diario = abertura atual - fechamento anterior.
 // Gap Ratio  = 100 * soma(gaps positivos) / soma(|gaps negativos|).
-// Se a soma dos gaps negativos for zero, a convencao adotada e Gap Ratio = 1.0.
+// Se a soma dos gaps negativos for zero e houver gaps positivos, o Gap Ratio e
+// saturado em 1000.0; sem gaps em nenhuma direcao, usa-se 100.0.
 // Linha de sinal = SMA do Gap Ratio.
 // SMA subindo  -> ALTA.
 // SMA caindo   -> BAIXA.
@@ -62,10 +68,9 @@
 //
 // Esta versao NAO usa a normalizacao alternativa 0..100.
 // ============================================================================
-// V27 mantem a correcao dos identificadores dos ativos, o overlay no grafico,
-// a paleta adaptativa e a margem superior de protecao. A tabela da carteira foi
-// simplificada para quatro linhas: rebalanceamento atual, acao atual,
-// rebalanceamento anterior e acao anterior.
+// V37 preserva as correções matematicas e de rebalanceamento da V36, mas simplifica
+// a tabela de gerenciamento para mostrar somente POSICAO ATUAL e POSICAO ANTERIOR,
+// ambas baseadas nos dois ultimos snapshots semanais confirmados.
 // chart.fg_color fornece uma cor de alto contraste com o fundo do grafico;
 // chart.bg_color informa o fundo escolhido pelo usuario no TradingView.
 // ticker.new() exige argumentos simple string; por isso nenhum nome obtido por
@@ -73,9 +78,24 @@
 // usando tickers literais e, depois, podem ser selecionados dinamicamente pelo
 // request.security() porque dynamic_requests=true.
 //
+// CORRECAO ATUAL DE REBALANCEAMENTO - V46:
+// - tendencia, Momentum, calendario real e precos continuam vindo dos 40 request.security() diarios;
+// - no fechamento confirmado da sexta-feira, o Top 1 elegivel fica congelado para a semana seguinte;
+// - a execucao semanal ocorre pela ABERTURA do primeiro pregao B3 efetivamente observado da nova semana;
+// - a data visual nasce como a proxima segunda-feira e permanece nela ate o fim desse dia;
+//   se nao houver pregao, avanca para o proximo dia util de calendario sem usar lista manual de feriados;
+// - PROXIMO REBALANCEAMENTO fica oculto ate a pre-selecao do fechamento da sexta-feira;
+// - depois de aparecer, permanece visivel ate ser consumido pelo primeiro pregao real da nova semana;
+// - quando vira REBALANCEAMENTO ATUAL, a linha PROXIMO some ate o fechamento da sexta seguinte;
+// - a data REAL do rebalanceamento e sempre a data do primeiro pregao que efetivamente abriu;
+// - a defesa continua ignorando oscilacoes intradiarias e troca no fechamento confirmado
+//   quando a posicao terminar BAIXA ou N/D.
+// POMO4 permanece qualificado como BMFBOVESPA:POMO4 e request.security() continua sem
+// calc_bars_count, que permanece exclusivamente na declaracao indicator().
+//
 // O script e um indicador, e nao uma estrategia de ordens. dynamic_requests=true
-// permite fazer request.security() dinamicamente dentro do loop dos 29 ativos.
-indicator("B3 Gap Momentum - Core V29 - BT Interface 41/15", overlay = true, dynamic_requests = true, calc_bars_count = 3200)
+// permite fazer request.security() dinamicamente dentro do loop dos 40 ativos.
+indicator("B3 Gap Momentum - Core V47 - Rebalanceamentos 41/15", overlay = true, dynamic_requests = true, calc_bars_count = 3200)
 // ============================================================================
 // 1. PARAMETROS DO GAP MOMENTUM
 // ============================================================================
@@ -104,7 +124,7 @@ const string DISPLAY_GROUP = "3. Visualizacao - Tabelas"
 // Um unico seletor garante que as visualizacoes sejam mutuamente exclusivas.
 // TOP 5            -> cinco melhores por Momentum ENTRE as acoes em ALTA,
 //                     acompanhado da tabela de carteira semanal ATUAL/ANTERIOR.
-// RANKING COMPLETO -> todas as 29 por Momentum, com estado e cor.
+// RANKING COMPLETO -> todas as 40 por Momentum, com estado e cor.
 // NENHUMA          -> nenhuma tabela.
 string TABLE_VIEW = input.string("TOP 5", "Tabela exibida", options = ["TOP 5", "RANKING COMPLETO", "NENHUMA"], group = DISPLAY_GROUP)
 // Distancia vertical FIXA antes das tabelas ancoradas no topo.
@@ -166,9 +186,13 @@ color TABLE_INFO_BG = IS_LIGHT_THEME ? color.rgb(232, 232, 232) : color.rgb(32, 
 // celulas sao 100% opacas; somente este espaco de afastamento permanece transparente.
 color TABLE_MARGIN_BG = color.new(chart.bg_color, 100)
 // ============================================================================
-// 5. UNIVERSO FIXO DE 29 ACOES B3
+// 5. UNIVERSO FIXO DE 40 ACOES B3
 // ============================================================================
-// O universo desta etapa ja foi filtrado anteriormente para:
+// Universo fundamental aprovado: 21 nomes originais + 19 nomes adicionados apos
+// pesquisa fundamentalista. O filtro considera qualidade do negocio/balanco, e nao
+// valuation ou sinal de compra.
+//
+// O universo desta etapa foi filtrado para:
 // - manter apenas tickers terminados em 3 ou 4;
 // - reduzir sobreposicoes economicas escolhidas nesta cesta;
 // - retirar os ativos qualitativamente excluidos durante a construcao.
@@ -176,45 +200,19 @@ color TABLE_MARGIN_BG = color.new(chart.bg_color, 100)
 // N deve sempre corresponder exatamente ao numero de nomes em NAMES.
 // ============================================================================
 // Quantidade total de ativos analisados.
-const int N = 29
+const int N = 40
 // Lista fixa dos nomes exibidos nas tabelas. A ordem original tambem e usada
 // como desempate quando dois ativos possuem exatamente o mesmo Momentum.
-var array<string> NAMES = array.from("ABEV3", "BBAS3", "BBDC3", "BBSE3", "CMIG4", "CSAN3", "CSMG3", "CSNA3", "PRIO3", "EGIE3", "EQTL3", "FLRY3", "GGBR3", "HYPE3", "IRBR3", "ITUB4", "JHSF3", "LREN3", "MULT3", "PETR4", "RADL3", "RAIL3", "RENT3", "SBSP3", "SUZB3", "TUPY3", "UGPA3", "VALE3", "WEGE3")
-// IDs customizados usados nos request.security().
+var array<string> NAMES = array.from("ABEV3", "BBDC3", "BBSE3", "CMIG4", "CSMG3", "PRIO3", "EGIE3", "FLRY3", "HYPE3", "ITUB4", "JHSF3", "LREN3", "MULT3", "PETR4", "RADL3", "RAIL3", "RENT3", "SBSP3", "UGPA3", "VALE3", "WEGE3", "B3SA3", "CXSE3", "PSSA3", "CPFE3", "SAPR4", "TAEE3", "ISAE4", "MILS3", "FRAS3", "LEVE3", "POMO4", "VULC3", "CURY3", "DIRR3", "CYRE3", "TOTS3", "SLCE3", "VIVT3", "EMBR3")
+// PETR4 permanece no indice 13 e tambem fornece o calendario semanal da B3.
+// Reaproveitar seu request evita ultrapassar o limite de 40 requests unicos.
+const int REBALANCE_CALENDAR_INDEX = 13
+// IDs customizados usados nos request.security(); EMBR3 e o ticker correto da Embraer.
 // IMPORTANTE: ticker.new() NAO aceita um ticker obtido de array.get() porque esse
 // valor e qualificado como series string. Cada chamada abaixo usa um literal, que
 // satisfaz a exigencia simple string e preserva session.regular + adjustment.splits.
-var array<string> REQUEST_TICKERS = array.new_string()
-if barstate.isfirst
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "ABEV3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "BBAS3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "BBDC3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "BBSE3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "CMIG4", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "CSAN3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "CSMG3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "CSNA3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "PRIO3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "EGIE3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "EQTL3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "FLRY3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "GGBR3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "HYPE3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "IRBR3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "ITUB4", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "JHSF3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "LREN3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "MULT3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "PETR4", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "RADL3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "RAIL3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "RENT3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "SBSP3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "SUZB3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "TUPY3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "UGPA3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "VALE3", session.regular, adjustment.splits))
-    array.push(REQUEST_TICKERS, ticker.new("BMFBOVESPA", "WEGE3", session.regular, adjustment.splits))
+// Array persistente criado em uma unica alocacao; evita 40 array.push() na primeira barra.
+var array<string> REQUEST_TICKERS = array.from(ticker.new("BMFBOVESPA", "ABEV3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "BBDC3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "BBSE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "CMIG4", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "CSMG3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "PRIO3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "EGIE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "FLRY3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "HYPE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "ITUB4", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "JHSF3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "LREN3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "MULT3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "PETR4", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "RADL3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "RAIL3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "RENT3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "SBSP3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "UGPA3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "VALE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "WEGE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "B3SA3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "CXSE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "PSSA3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "CPFE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "SAPR4", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "TAEE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "ISAE4", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "MILS3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "FRAS3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "LEVE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "POMO4", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "VULC3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "CURY3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "DIRR3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "CYRE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "TOTS3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "SLCE3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "VIVT3", session.regular, adjustment.splits), ticker.new("BMFBOVESPA", "EMBR3", session.regular, adjustment.splits))
 // Estado ALTA/BAIXA mais recente de cada ativo.
 // Quando o diagnostico nao e OK, o valor deste array nao deve ser usado sozinho.
 var array<int> TREND_STATES = array.new_int(N, 0)
@@ -222,11 +220,46 @@ var array<int> TREND_STATES = array.new_int(N, 0)
 var array<int> DIAG_CODES = array.new_int(N, DIAG_WARMUP)
 // Momentum de preco de cada ativo. Pode ser na se nao houver historico suficiente.
 var array<float> MOMENTUM_VALUES = array.new_float(N, na)
-// Abertura diaria e timestamp diario de cada ativo.
-// Estes dois arrays existem para a camada de execucao do backtest: uma decisao
-// semanal e executada somente na abertura do primeiro pregao B3 POSTERIOR a decisao.
+// Dados diarios de cada ativo usados pela visualizacao e pela camada de execucao.
+// O fechamento so se torna preco de troca depois da confirmacao do fim do pregao B3.
 var array<float> DAILY_OPEN_VALUES = array.new_float(N, na)
+// Fechamento vivo do candle diario. Durante o pregao ele acompanha o ultimo preco;
+// so e usado para execucao quando o fechamento B3 correspondente estiver confirmado.
+var array<float> DAILY_CLOSE_VALUES = array.new_float(N, na)
 var array<int> DAILY_TIME_VALUES = array.new_int(N, na)
+
+// Snapshot SEMANAL congelado no primeiro pregao B3 efetivamente negociado da semana.
+// Ele e produzido dentro do contexto diario de cada ativo e permanece imutavel pelo
+// restante da semana. Isso impede que um grafico hospedeiro com sessao diferente use
+// dados de terca/quarta como se fossem os dados do rebalanceamento de segunda.
+var array<int> WEEKLY_TREND_STATES = array.new_int(N, 0)
+var array<int> WEEKLY_DIAG_CODES = array.new_int(N, DIAG_WARMUP)
+var array<float> WEEKLY_MOMENTUM_VALUES = array.new_float(N, na)
+var array<float> WEEKLY_CLOSE_VALUES = array.new_float(N, na)
+var array<int> WEEKLY_SNAPSHOT_TIME_VALUES = array.new_int(N, na)
+
+// Snapshot semanal imediatamente ANTERIOR ao mais recente. Ele e necessario para
+// o caso extremo em que uma semana possui apenas um pregao: no primeiro pregao da
+// semana seguinte, esse mesmo candle e simultaneamente a execucao da semana anterior
+// e o novo snapshot semanal. Sem esta segunda memoria, o snapshot antigo seria perdido.
+var array<int> PREVIOUS_WEEKLY_TREND_STATES = array.new_int(N, 0)
+var array<int> PREVIOUS_WEEKLY_DIAG_CODES = array.new_int(N, DIAG_WARMUP)
+var array<float> PREVIOUS_WEEKLY_MOMENTUM_VALUES = array.new_float(N, na)
+var array<float> PREVIOUS_WEEKLY_CLOSE_VALUES = array.new_float(N, na)
+var array<int> PREVIOUS_WEEKLY_SNAPSHOT_TIME_VALUES = array.new_int(N, na)
+
+// Fechamento confirmado do pregao B3 imediatamente anterior ao atual. A defesa
+// intrassemanal usa estes arrays em vez de depender do fechamento do grafico hospedeiro.
+var array<int> PREVIOUS_TREND_STATES = array.new_int(N, 0)
+var array<int> PREVIOUS_DIAG_CODES = array.new_int(N, DIAG_WARMUP)
+var array<float> PREVIOUS_MOMENTUM_VALUES = array.new_float(N, na)
+var array<float> PREVIOUS_CLOSE_VALUES = array.new_float(N, na)
+var array<int> PREVIOUS_DAY_TIME_VALUES = array.new_int(N, na)
+
+// Abertura congelada do PRIMEIRO PREGAO da semana, usada pela execucao semanal.
+// A defesa intrassemanal continua usando os fechamentos diarios confirmados.
+var array<float> WEEKLY_EXECUTION_OPEN_VALUES = array.new_float(N, na)
+var array<int> WEEKLY_EXECUTION_TIME_VALUES = array.new_int(N, na)
 // ============================================================================
 // 6. GAP MOMENTUM: CALCULO E CLASSIFICACAO
 // ============================================================================
@@ -258,10 +291,15 @@ f_gap_momentum_state() =>
     // desejada por observacoes validas mais antigas.
     bool gapWindowComplete = not na(validGapCount) and validGapCount == GAP_PERIOD
     // Calcula o Gap Ratio somente com uma janela completa.
-    // A convencao mantida nesta estrategia define 1.0 se nao houver gaps negativos.
+    // CORRECAO V36: gapsDown == 0 nao pode derrubar um ativo fortemente comprador
+    // para 1.0. Sem gaps negativos, saturamos positivamente; sem gaps em nenhuma
+    // direcao, usamos o ponto neutro 100.0.
     float gapRatio = na
     if gapWindowComplete and not na(gapsUp) and not na(gapsDown)
-        gapRatio := gapsDown == 0.0 ? 1.0 : 100.0 * gapsUp / gapsDown
+        if gapsDown == 0.0
+            gapRatio := gapsUp > 0.0 ? 1000.0 : 100.0
+        else
+            gapRatio := 100.0 * gapsUp / gapsDown
     // Calcula a SMA em toda barra para manter o historico interno consistente.
     float rawSignalLine = ta.sma(gapRatio, SIGNAL_PERIOD)
     // Conta quantos Gap Ratios validos existem na janela da SMA.
@@ -326,15 +364,61 @@ f_asset_payload() =>
     [trendStateValue, diagnosticValue] = f_gap_momentum_state()
     // Calcula separadamente o Momentum de preco do mesmo ativo.
     float momentumValue = f_price_momentum()
-    // A abertura e o horario da barra diaria sao usados somente pela interface de
-    // execucao do backtest. Incluir tudo no mesmo payload evita request extra.
+
+    // Dados vivos da barra diaria corrente. Continuam alimentando TOP 5, ranking
+    // e gerenciamento em tempo real exatamente como nas versoes anteriores.
     float dailyOpenValue = open
+    float dailyCloseValue = close
     int dailyTimeValue = time
-    [trendStateValue, diagnosticValue, momentumValue, dailyOpenValue, dailyTimeValue]
+    int dailyCloseTimeValue = time_close
+    int weeklyKeyValue = time("W")
+    int dailyBarIndexValue = bar_index
+
+    // Primeiro pregao REAL da semana para ESTE ativo. Em uma semana normal e segunda;
+    // se nao houver barra na segunda, passa automaticamente ao primeiro pregao seguinte.
+    bool firstTradingDayOfWeekValue = not na(weeklyKeyValue[1]) and weeklyKeyValue != weeklyKeyValue[1]
+
+    // Snapshot imutavel do primeiro pregao da semana. ta.valuewhen() conserva os
+    // valores daquele dia mesmo que o script hospedeiro so volte a executar dias depois.
+    int weeklyTrendStateValue = ta.valuewhen(firstTradingDayOfWeekValue, trendStateValue, 0)
+    int weeklyDiagnosticValue = ta.valuewhen(firstTradingDayOfWeekValue, diagnosticValue, 0)
+    float weeklyMomentumValue = ta.valuewhen(firstTradingDayOfWeekValue, momentumValue, 0)
+    float weeklyCloseValue = ta.valuewhen(firstTradingDayOfWeekValue, close, 0)
+    int weeklySnapshotTimeValue = ta.valuewhen(firstTradingDayOfWeekValue, time, 0)
+    int weeklySnapshotWeekKeyValue = ta.valuewhen(firstTradingDayOfWeekValue, weeklyKeyValue, 0)
+
+    // Snapshot semanal anterior. O occurrence=1 preserva a decisao da semana passada
+    // quando o candle atual ja inaugurou uma nova semana antes de a execucao antiga
+    // ser casada pelo calendario.
+    int previousWeeklyTrendStateValue = ta.valuewhen(firstTradingDayOfWeekValue, trendStateValue, 1)
+    int previousWeeklyDiagnosticValue = ta.valuewhen(firstTradingDayOfWeekValue, diagnosticValue, 1)
+    float previousWeeklyMomentumValue = ta.valuewhen(firstTradingDayOfWeekValue, momentumValue, 1)
+    float previousWeeklyCloseValue = ta.valuewhen(firstTradingDayOfWeekValue, close, 1)
+    int previousWeeklySnapshotTimeValue = ta.valuewhen(firstTradingDayOfWeekValue, time, 1)
+    int previousWeeklySnapshotWeekKeyValue = ta.valuewhen(firstTradingDayOfWeekValue, weeklyKeyValue, 1)
+
+    // Valores CONFIRMADOS do pregao anterior, usados pela defesa intrassemanal.
+    int previousTrendStateValue = trendStateValue[1]
+    int previousDiagnosticValue = diagnosticValue[1]
+    float previousMomentumValue = momentumValue[1]
+    float previousCloseValue = close[1]
+    int previousDayTimeValue = time[1]
+
+    // Congela a ABERTURA do primeiro pregao REAL da semana. Esses campos permitem
+    // executar/reconstruir o rebalanceamento pela abertura correta mesmo se o grafico
+    // hospedeiro so atualizar mais tarde no mesmo dia ou em outro momento da semana.
+    float weeklyExecutionOpenValue = ta.valuewhen(firstTradingDayOfWeekValue, open, 0)
+    int weeklyExecutionTimeValue = ta.valuewhen(firstTradingDayOfWeekValue, time, 0)
+    int weeklyExecutionWeekKeyValue = ta.valuewhen(firstTradingDayOfWeekValue, weeklyKeyValue, 0)
+
+    // Um unico payload preserva o limite de 40 contextos request.security().
+    [trendStateValue, diagnosticValue, momentumValue, dailyOpenValue, dailyCloseValue, dailyTimeValue, dailyCloseTimeValue, dailyBarIndexValue, weeklyTrendStateValue, weeklyDiagnosticValue, weeklyMomentumValue, weeklyCloseValue, weeklySnapshotTimeValue, weeklySnapshotWeekKeyValue, previousWeeklyTrendStateValue, previousWeeklyDiagnosticValue, previousWeeklyMomentumValue, previousWeeklyCloseValue, previousWeeklySnapshotTimeValue, previousWeeklySnapshotWeekKeyValue, previousTrendStateValue, previousDiagnosticValue, previousMomentumValue, previousCloseValue, previousDayTimeValue, weeklyExecutionOpenValue, weeklyExecutionTimeValue, weeklyExecutionWeekKeyValue]
 // ============================================================================
-// 9. COLETA DIARIA DOS 29 ATIVOS
+// 9. COLETA DIARIA DOS 40 ATIVOS
 // ============================================================================
 // Cada ticker usa uma unica request.security() no timeframe D.
+// Em Pine v5, calc_bars_count permanece somente na declaracao indicator(); nao e
+// passado para request.security().
 //
 // session.regular:
 //    utiliza a sessao regular do ativo.
@@ -349,25 +433,78 @@ f_asset_payload() =>
 // lookahead_off:
 //    impede acesso antecipado a valores futuros do timeframe solicitado.
 // ============================================================================
+// O calendario B3 e capturado do proprio payload de PETR4 para manter exatamente
+// 40 contextos unicos de request.security(), um para cada acao do universo.
+int b3TradingDayTimeFromUniverse = na
+int b3TradingDayCloseTimeFromUniverse = na
+int b3DailyBarIndexFromUniverse = na
+int b3WeeklySnapshotTimeFromUniverse = na
+int b3WeeklySnapshotWeekKeyFromUniverse = na
+int b3PreviousWeeklySnapshotTimeFromUniverse = na
+int b3PreviousWeeklySnapshotWeekKeyFromUniverse = na
+int b3PreviousTradingDayTimeFromUniverse = na
+int b3WeeklyExecutionTimeFromUniverse = na
+int b3WeeklyExecutionWeekKeyFromUniverse = na
 for i = 0 to N - 1
     // Seleciona um ID customizado que ja foi criado com ticker.new() a partir de
     // um literal simple string. array.get() pode produzir series string aqui, mas
     // request.security() aceita esse tipo porque dynamic_requests=true.
     string assetTicker = array.get(REQUEST_TICKERS, i)
-    // Uma unica requisicao entrega scanner + dados de execucao do backtest.
-    [assetTrendState, assetDiagnostic, assetMomentum, assetDailyOpen, assetDailyTime] = request.security(assetTicker, "D", f_asset_payload(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = 3200)
+
+    // Uma unica requisicao entrega scanner vivo, fechamento diario e snapshot semanal.
+    // Nenhum dado de preco do ativo hospedeiro e usado na escolha da carteira.
+    [assetTrendState, assetDiagnostic, assetMomentum, assetDailyOpen, assetDailyClose, assetDailyTime, assetDailyCloseTime, assetDailyBarIndex, assetWeeklyTrendState, assetWeeklyDiagnostic, assetWeeklyMomentum, assetWeeklyClose, assetWeeklySnapshotTime, assetWeeklySnapshotWeekKey, assetPreviousWeeklyTrendState, assetPreviousWeeklyDiagnostic, assetPreviousWeeklyMomentum, assetPreviousWeeklyClose, assetPreviousWeeklySnapshotTime, assetPreviousWeeklySnapshotWeekKey, assetPreviousTrendState, assetPreviousDiagnostic, assetPreviousMomentum, assetPreviousClose, assetPreviousDayTime, assetWeeklyExecutionOpen, assetWeeklyExecutionTime, assetWeeklyExecutionWeekKey] = request.security(assetTicker, "D", f_asset_payload(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
     // Se o request inteiro nao entregar diagnostico, tratamos o ativo como N/D.
     // Isso evita que na escape para as regras de elegibilidade do TOP 5.
     int safeDiagnostic = na(assetDiagnostic) ? DIAG_DATA : assetDiagnostic
-    // O estado numerico so e relevante quando safeDiagnostic == DIAG_OK.
-    // Zero funciona como valor neutro seguro quando o request nao trouxe estado.
     int safeTrendState = na(assetTrendState) ? 0 : assetTrendState
-    // Atualiza os arrays centrais usados pelas duas visualizacoes.
+    int safeWeeklyDiagnostic = na(assetWeeklyDiagnostic) ? DIAG_DATA : assetWeeklyDiagnostic
+    int safeWeeklyTrendState = na(assetWeeklyTrendState) ? 0 : assetWeeklyTrendState
+    int safePreviousWeeklyDiagnostic = na(assetPreviousWeeklyDiagnostic) ? DIAG_DATA : assetPreviousWeeklyDiagnostic
+    int safePreviousWeeklyTrendState = na(assetPreviousWeeklyTrendState) ? 0 : assetPreviousWeeklyTrendState
+    int safePreviousDiagnostic = na(assetPreviousDiagnostic) ? DIAG_DATA : assetPreviousDiagnostic
+    int safePreviousTrendState = na(assetPreviousTrendState) ? 0 : assetPreviousTrendState
+
+    // Arrays vivos usados pelas visualizacoes e pela defesa diaria.
     array.set(TREND_STATES, i, safeTrendState)
     array.set(DIAG_CODES, i, safeDiagnostic)
     array.set(MOMENTUM_VALUES, i, assetMomentum)
     array.set(DAILY_OPEN_VALUES, i, assetDailyOpen)
+    array.set(DAILY_CLOSE_VALUES, i, assetDailyClose)
     array.set(DAILY_TIME_VALUES, i, assetDailyTime)
+
+    // Arrays congelados usados EXCLUSIVAMENTE pela decisao semanal e pelo fechamento
+    // correspondente ao snapshot.
+    array.set(WEEKLY_TREND_STATES, i, safeWeeklyTrendState)
+    array.set(WEEKLY_DIAG_CODES, i, safeWeeklyDiagnostic)
+    array.set(WEEKLY_MOMENTUM_VALUES, i, assetWeeklyMomentum)
+    array.set(WEEKLY_CLOSE_VALUES, i, assetWeeklyClose)
+    array.set(WEEKLY_SNAPSHOT_TIME_VALUES, i, assetWeeklySnapshotTime)
+    array.set(PREVIOUS_WEEKLY_TREND_STATES, i, safePreviousWeeklyTrendState)
+    array.set(PREVIOUS_WEEKLY_DIAG_CODES, i, safePreviousWeeklyDiagnostic)
+    array.set(PREVIOUS_WEEKLY_MOMENTUM_VALUES, i, assetPreviousWeeklyMomentum)
+    array.set(PREVIOUS_WEEKLY_CLOSE_VALUES, i, assetPreviousWeeklyClose)
+    array.set(PREVIOUS_WEEKLY_SNAPSHOT_TIME_VALUES, i, assetPreviousWeeklySnapshotTime)
+    array.set(PREVIOUS_TREND_STATES, i, safePreviousTrendState)
+    array.set(PREVIOUS_DIAG_CODES, i, safePreviousDiagnostic)
+    array.set(PREVIOUS_MOMENTUM_VALUES, i, assetPreviousMomentum)
+    array.set(PREVIOUS_CLOSE_VALUES, i, assetPreviousClose)
+    array.set(PREVIOUS_DAY_TIME_VALUES, i, assetPreviousDayTime)
+    array.set(WEEKLY_EXECUTION_OPEN_VALUES, i, assetWeeklyExecutionOpen)
+    array.set(WEEKLY_EXECUTION_TIME_VALUES, i, assetWeeklyExecutionTime)
+
+    if i == REBALANCE_CALENDAR_INDEX
+        b3TradingDayTimeFromUniverse := assetDailyTime
+        b3TradingDayCloseTimeFromUniverse := assetDailyCloseTime
+        b3DailyBarIndexFromUniverse := assetDailyBarIndex
+        b3WeeklySnapshotTimeFromUniverse := assetWeeklySnapshotTime
+        b3WeeklySnapshotWeekKeyFromUniverse := assetWeeklySnapshotWeekKey
+        b3PreviousWeeklySnapshotTimeFromUniverse := assetPreviousWeeklySnapshotTime
+        b3PreviousWeeklySnapshotWeekKeyFromUniverse := assetPreviousWeeklySnapshotWeekKey
+        b3PreviousTradingDayTimeFromUniverse := assetPreviousDayTime
+        b3WeeklyExecutionTimeFromUniverse := assetWeeklyExecutionTime
+        b3WeeklyExecutionWeekKeyFromUniverse := assetWeeklyExecutionWeekKey
 // ============================================================================
 // 10. FUNCOES AUXILIARES DE ESTADO E RANKING
 // ============================================================================
@@ -413,6 +550,12 @@ f_is_better_momentum(float candidateMomentum, int candidateIndex, float bestMome
     else if not candidateValid and not bestValid
         result := candidateIndex < bestIndex
     result
+// Comparacao por DATA B3, nao por igualdade milimetrica de timestamps.
+// Definida antes das funcoes de snapshot para que toda validacao diaria use a
+// mesma semantica, inclusive em simbolos cujo timestamp de sessao possa divergir.
+f_same_b3_date(int firstTime, int secondTime) =>
+    not na(firstTime) and not na(secondTime) and str.format_time(firstTime, "yyyyMMdd", "America/Sao_Paulo") == str.format_time(secondTime, "yyyyMMdd", "America/Sao_Paulo")
+
 // ============================================================================
 // 11. FUNCOES DA CARTEIRA SEMANAL
 // ============================================================================
@@ -425,7 +568,7 @@ f_is_better_momentum(float candidateMomentum, int candidateIndex, float bestMome
 // carteira so pode mudar no rebalanceamento semanal.
 // ============================================================================
 // Retorna o indice da melhor acao elegivel no momento da chamada.
-// Se nenhuma das 29 estiver simultaneamente em ALTA e com Momentum valido,
+// Se nenhuma das 40 estiver simultaneamente em ALTA e com Momentum valido,
 // retorna -1.
 f_best_high_momentum_index() =>
     int bestIndex = -1
@@ -443,16 +586,14 @@ f_best_high_momentum_index() =>
             bestIndex := i
             bestMomentum := assetMomentum
     bestIndex
-// Calcula a posicao GLOBAL de um ativo no ranking de Momentum das 29 acoes.
-// O ranking desta funcao nao filtra ALTA/BAIXA; ele serve apenas para informar,
-// na tabela da carteira, onde a posicao atual/anterior se encontra no universo.
+// Calcula a posicao GLOBAL de um ativo no ranking de Momentum das 40 acoes.
+// Mantida somente para diagnostico/ranking completo; NAO e usada como rank da carteira.
 f_global_momentum_rank(int targetIndex) =>
     int result = na
     if targetIndex >= 0 and targetIndex < N
         float targetMomentum = array.get(MOMENTUM_VALUES, targetIndex)
         if not na(targetMomentum)
             int rankValue = 1
-            // Cada ativo que for "melhor" segundo o comparador fica antes do alvo.
             for i = 0 to N - 1
                 if i != targetIndex
                     float otherMomentum = array.get(MOMENTUM_VALUES, i)
@@ -460,215 +601,685 @@ f_global_momentum_rank(int targetIndex) =>
                         rankValue += 1
             result := rankValue
     result
+
+// Rank usado pelo GERENCIAMENTO e pelo TOP 5.
+// Participam somente DIAG_OK + TREND_UP + Momentum valido. Assim, a acao escolhida
+// no rebalanceamento como melhor elegivel necessariamente recebe rank 1.
+f_eligible_high_momentum_rank(int targetIndex) =>
+    int result = na
+    if targetIndex >= 0 and targetIndex < N
+        int targetState = array.get(TREND_STATES, targetIndex)
+        int targetDiagnostic = array.get(DIAG_CODES, targetIndex)
+        float targetMomentum = array.get(MOMENTUM_VALUES, targetIndex)
+        bool targetEligible = targetDiagnostic == DIAG_OK and targetState == TREND_UP and not na(targetMomentum)
+        if targetEligible
+            int rankValue = 1
+            for i = 0 to N - 1
+                if i != targetIndex
+                    int otherState = array.get(TREND_STATES, i)
+                    int otherDiagnostic = array.get(DIAG_CODES, i)
+                    float otherMomentum = array.get(MOMENTUM_VALUES, i)
+                    bool otherEligible = otherDiagnostic == DIAG_OK and otherState == TREND_UP and not na(otherMomentum)
+                    if otherEligible and f_is_better_momentum(otherMomentum, i, targetMomentum, targetIndex)
+                        rankValue += 1
+            result := rankValue
+    result
+
+// Retorna os valores de um ativo no snapshot semanal solicitado. O alvo pode estar
+// no snapshot mais recente ou no imediatamente anterior; isso cobre corretamente
+// semanas com apenas um pregao, sem misturar dados de semanas diferentes.
+f_weekly_snapshot_values(int targetIndex, int targetSnapshotTime) =>
+    int stateValue = 0
+    int diagnosticValue = DIAG_DATA
+    float momentumValue = na
+    if targetIndex >= 0 and targetIndex < N
+        int currentTime = array.get(WEEKLY_SNAPSHOT_TIME_VALUES, targetIndex)
+        int previousTime = array.get(PREVIOUS_WEEKLY_SNAPSHOT_TIME_VALUES, targetIndex)
+        if f_same_b3_date(currentTime, targetSnapshotTime)
+            stateValue := array.get(WEEKLY_TREND_STATES, targetIndex)
+            diagnosticValue := array.get(WEEKLY_DIAG_CODES, targetIndex)
+            momentumValue := array.get(WEEKLY_MOMENTUM_VALUES, targetIndex)
+        else if f_same_b3_date(previousTime, targetSnapshotTime)
+            stateValue := array.get(PREVIOUS_WEEKLY_TREND_STATES, targetIndex)
+            diagnosticValue := array.get(PREVIOUS_WEEKLY_DIAG_CODES, targetIndex)
+            momentumValue := array.get(PREVIOUS_WEEKLY_MOMENTUM_VALUES, targetIndex)
+    [stateValue, diagnosticValue, momentumValue]
+
+// Retorna o fechamento do ativo no snapshot semanal solicitado. E usado somente
+// para registrar a troca no proprio fechamento do rebalanceamento, sem esperar
+// a abertura do pregao seguinte.
+f_weekly_snapshot_close(int targetIndex, int targetSnapshotTime) =>
+    float closeValue = na
+    if targetIndex >= 0 and targetIndex < N
+        int currentTime = array.get(WEEKLY_SNAPSHOT_TIME_VALUES, targetIndex)
+        int previousTime = array.get(PREVIOUS_WEEKLY_SNAPSHOT_TIME_VALUES, targetIndex)
+        if f_same_b3_date(currentTime, targetSnapshotTime)
+            closeValue := array.get(WEEKLY_CLOSE_VALUES, targetIndex)
+        else if f_same_b3_date(previousTime, targetSnapshotTime)
+            closeValue := array.get(PREVIOUS_WEEKLY_CLOSE_VALUES, targetIndex)
+    closeValue
+
+// Retorna o melhor ativo usando EXCLUSIVAMENTE o snapshot congelado no primeiro
+// pregao B3 da semana correspondente a targetSnapshotTime.
+f_best_weekly_snapshot_index(int targetSnapshotTime) =>
+    int bestIndex = -1
+    float bestMomentum = na
+    for i = 0 to N - 1
+        [assetState, assetDiagnostic, assetMomentum] = f_weekly_snapshot_values(i, targetSnapshotTime)
+        bool eligible = assetDiagnostic == DIAG_OK and assetState == TREND_UP and not na(assetMomentum)
+        bool better = eligible and (bestIndex == -1 or f_is_better_momentum(assetMomentum, i, bestMomentum, bestIndex))
+        if better
+            bestIndex := i
+            bestMomentum := assetMomentum
+    bestIndex
+
+// Rank historico do snapshot semanal. Mantem exatamente a mesma regra de
+// elegibilidade e desempate do TOP 5, sem consultar valores vivos posteriores.
+f_weekly_snapshot_rank(int targetIndex, int targetSnapshotTime) =>
+    int result = na
+    if targetIndex >= 0 and targetIndex < N
+        [targetState, targetDiagnostic, targetMomentum] = f_weekly_snapshot_values(targetIndex, targetSnapshotTime)
+        bool targetEligible = targetDiagnostic == DIAG_OK and targetState == TREND_UP and not na(targetMomentum)
+        if targetEligible
+            int rankValue = 1
+            for i = 0 to N - 1
+                if i != targetIndex
+                    [otherState, otherDiagnostic, otherMomentum] = f_weekly_snapshot_values(i, targetSnapshotTime)
+                    bool otherEligible = otherDiagnostic == DIAG_OK and otherState == TREND_UP and not na(otherMomentum)
+                    if otherEligible and f_is_better_momentum(otherMomentum, i, targetMomentum, targetIndex)
+                        rankValue += 1
+            result := rankValue
+    result
+
+// Melhor candidato usando somente o fechamento CONFIRMADO do pregao B3 anterior.
+// Serve para a substituicao defensiva sem consultar o fechamento do ativo hospedeiro.
+f_best_previous_day_index(int targetDecisionTime) =>
+    int bestIndex = -1
+    float bestMomentum = na
+    for i = 0 to N - 1
+        int assetDecisionTime = array.get(PREVIOUS_DAY_TIME_VALUES, i)
+        int assetState = array.get(PREVIOUS_TREND_STATES, i)
+        int assetDiagnostic = array.get(PREVIOUS_DIAG_CODES, i)
+        float assetMomentum = array.get(PREVIOUS_MOMENTUM_VALUES, i)
+        bool sameDecisionDay = f_same_b3_date(assetDecisionTime, targetDecisionTime)
+        bool eligible = sameDecisionDay and assetDiagnostic == DIAG_OK and assetState == TREND_UP and not na(assetMomentum)
+        bool better = eligible and (bestIndex == -1 or f_is_better_momentum(assetMomentum, i, bestMomentum, bestIndex))
+        if better
+            bestIndex := i
+            bestMomentum := assetMomentum
+    bestIndex
+
+// Rank historico entre as acoes em ALTA no fechamento confirmado do pregao anterior.
+// E usado apenas como fallback quando a sexta-feira nao teve pregao e, por isso, nao
+// foi possivel congelar a selecao antecipadamente.
+f_previous_day_rank(int targetIndex, int targetDecisionTime) =>
+    int result = na
+    if targetIndex >= 0 and targetIndex < N
+        int targetTime = array.get(PREVIOUS_DAY_TIME_VALUES, targetIndex)
+        int targetState = array.get(PREVIOUS_TREND_STATES, targetIndex)
+        int targetDiagnostic = array.get(PREVIOUS_DIAG_CODES, targetIndex)
+        float targetMomentum = array.get(PREVIOUS_MOMENTUM_VALUES, targetIndex)
+        bool targetEligible = f_same_b3_date(targetTime, targetDecisionTime) and targetDiagnostic == DIAG_OK and targetState == TREND_UP and not na(targetMomentum)
+        if targetEligible
+            int rankValue = 1
+            for i = 0 to N - 1
+                if i != targetIndex
+                    int otherTime = array.get(PREVIOUS_DAY_TIME_VALUES, i)
+                    int otherState = array.get(PREVIOUS_TREND_STATES, i)
+                    int otherDiagnostic = array.get(PREVIOUS_DIAG_CODES, i)
+                    float otherMomentum = array.get(PREVIOUS_MOMENTUM_VALUES, i)
+                    bool otherEligible = f_same_b3_date(otherTime, targetDecisionTime) and otherDiagnostic == DIAG_OK and otherState == TREND_UP and not na(otherMomentum)
+                    if otherEligible and f_is_better_momentum(otherMomentum, i, targetMomentum, targetIndex)
+                        rankValue += 1
+            result := rankValue
+    result
+
 // ============================================================================
-// 12. REBALANCEAMENTO SEMANAL + REGRA DEFENSIVA DE SAIDA DE ALTA
+// 12. REBALANCEAMENTO SEMANAL + GERENCIAMENTO DEFENSIVO
 // ============================================================================
-// REGRA PROGRAMADA:
-// 1) Detectamos a mudanca da semana usando o calendario diario de PETR4.
-// 2) Uma segunda-feira sem pregao nao cria evento; o rebalanceamento acontece no
-//    primeiro pregao B3 seguinte.
-// 3) Nesse evento escolhemos o maior Momentum ENTRE as acoes validamente em ALTA.
-// 4) Se nenhuma estiver em ALTA, a posicao ATUAL passa explicitamente para CAIXA.
-// 5) Se a mesma acao continuar Top 1 elegivel, ela permanece por mais uma semana.
-// 6) Se outra a superar, a nova assume; o ciclo semanal anterior permanece registrado.
+// FONTES DE VERDADE:
+// - PETR4 fornece exclusivamente o calendario diario da B3;
+// - WEEKLY_* identifica e preserva o primeiro pregao B3 real da semana;
+// - currentPositionIndex = alvo de gerenciamento atualmente vigente;
+// - backtestHeldPositionIndex = posicao efetivamente executada pelo canal de backtest.
 //
-// EXCECAO DEFENSIVA INTRASSEMANAL:
-// 7) Entre rebalanceamentos, a carteira normalmente fica congelada.
-// 8) Porem, se a acao ATUAL deixar de estar validamente em ALTA (BAIXA ou N/D),
-//    ela sai imediatamente. O codigo procura o novo Top 1 atual entre as acoes em
-//    ALTA e troca para ele. Se nao houver nenhuma, a carteira vai para CAIXA.
-// 9) Uma carteira que ja esteja em CAIXA nao reentra no meio da semana; a reentrada
-//    ocorre apenas no proximo rebalanceamento semanal programado.
+// IMPORTANTE: calendario, datas, estados e precos da carteira vem dos request.security().
+// O grafico hospedeiro apenas dispara as execucoes do Pine. timenow e consultado somente
+// na barra em tempo real para impedir confirmacao antes do time_close oficial da B3.
 // ============================================================================
-// PETR4 e usada somente como calendario de pregoes para detectar a primeira barra
-// efetivamente negociada de cada semana B3.
-string REBALANCE_CALENDAR_TICKER = ticker.new("BMFBOVESPA", "PETR4", session.regular, adjustment.splits)
-// Time zone fixa da B3 usada apenas para formatar as datas exibidas.
 const string B3_TIMEZONE = "America/Sao_Paulo"
-// Uma unica requisicao devolve dois horarios do calendario B3:
-// 1) time("W") = inicio logico da semana de negociacao;
-// 2) time      = abertura da barra diaria realmente negociada.
-// O segundo valor permite registrar a DATA REAL do rebalanceamento. Se a segunda
-// for feriado, a primeira barra diaria da semana sera terca (ou o proximo pregao).
-[b3WeekKey, b3TradingDayTime] = request.security(REBALANCE_CALENDAR_TICKER, "D", [time("W"), time], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, calc_bars_count = 3200)
-// Verdadeiro apenas na primeira atualizacao em que a serie B3 passa para uma nova
-// semana. Em caso de feriado de segunda, isso ocorre no primeiro pregao seguinte.
-bool newB3TradingWeek = not na(b3WeekKey) and (na(b3WeekKey[1]) or b3WeekKey != b3WeekKey[1])
-// Guarda as datas dos dois ultimos rebalanceamentos semanais efetivamente
-// processados. Saidas defensivas intrassemanais nao alteram estas datas, porque
-// nao sao rebalanceamentos programados.
+int b3TradingDayTime = b3TradingDayTimeFromUniverse
+int b3TradingDayCloseTime = b3TradingDayCloseTimeFromUniverse
+int b3DailyBarIndex = b3DailyBarIndexFromUniverse
+int b3WeeklySnapshotTime = b3WeeklySnapshotTimeFromUniverse
+int b3WeeklySnapshotWeekKey = b3WeeklySnapshotWeekKeyFromUniverse
+int b3PreviousWeeklySnapshotTime = b3PreviousWeeklySnapshotTimeFromUniverse
+int b3PreviousWeeklySnapshotWeekKey = b3PreviousWeeklySnapshotWeekKeyFromUniverse
+int b3PreviousTradingDayTime = b3PreviousTradingDayTimeFromUniverse
+int b3WeeklyExecutionTime = b3WeeklyExecutionTimeFromUniverse
+int b3WeeklyExecutionWeekKey = b3WeeklyExecutionWeekKeyFromUniverse
+
+// Usa o calendario DIARIO da PETR4 para o warm-up. O numero de barras do grafico
+// hospedeiro nao participa da liberacao do sistema.
+int minimumDailyBars = math.max(GAP_PERIOD + SIGNAL_PERIOD + 1, MOMENTUM_PERIOD + 1) + 5
+bool systemWarmedUp = not na(b3DailyBarIndex) and b3DailyBarIndex + 1 >= minimumDailyBars
+
+// Em timeframes maiores que D, request.security("D") vira solicitacao de timeframe
+// inferior e nao oferece a mesma garantia de sequenciamento diario. O ativo do grafico
+// pode ser qualquer um; a restricao abaixo diz respeito somente ao TIMEFRAME.
+bool supportedRebalanceTimeframe = timeframe.in_seconds(timeframe.period) <= timeframe.in_seconds("D")
+
+// Fechamento diario confirmado da B3. Em historico, a barra diaria solicitada ja esta
+// confirmada; em tempo real, espera o time_close oficial antes de congelar sexta-feira
+// ou disparar a defesa de fim de pregao.
+bool b3CurrentDailyCloseConfirmed = systemWarmedUp and supportedRebalanceTimeframe and not na(b3TradingDayTime) and not na(b3TradingDayCloseTime) and (barstate.ishistory or timenow >= b3TradingDayCloseTime)
+
+// O PRIMEIRO PREGAO da semana e a fonte de verdade da EXECUCAO semanal.
+// A selecao do ativo, porem, vem do fechamento da semana anterior e permanece congelada.
+// Assim, uma segunda-feira sem negociacao nao recalcula o ticker: apenas adia a execucao.
+bool weeklyExecutionAvailable = systemWarmedUp and supportedRebalanceTimeframe and not na(b3WeeklySnapshotTime) and not na(b3WeeklySnapshotWeekKey) and not na(b3WeeklyExecutionTime) and not na(b3WeeklyExecutionWeekKey) and b3WeeklyExecutionWeekKey == b3WeeklySnapshotWeekKey
+
+int rebalanceSnapshotTime = weeklyExecutionAvailable ? b3WeeklySnapshotTime : na
+int rebalanceSnapshotWeekKey = weeklyExecutionAvailable ? b3WeeklySnapshotWeekKey : na
+
+var int lastProcessedRebalanceWeekKey = na
+bool rebalanceCommit = weeklyExecutionAvailable and (na(lastProcessedRebalanceWeekKey) or rebalanceSnapshotWeekKey != lastProcessedRebalanceWeekKey)
+
 var int lastWeeklyRebalanceTime = na
 var int previousWeeklyRebalanceTime = na
-// Converte um timestamp para DD/MM/AAAA no fuso da B3.
+
 f_date_text(int timestampValue) =>
     na(timestampValue) ? "N/D" : str.format_time(timestampValue, "dd/MM/yyyy", B3_TIMEZONE)
-// Estado persistente da carteira.
-// currentPositionIndex representa a posicao ativa no ciclo semanal atual.
-// previousWeeklyPositionIndex guarda a posicao que estava ativa imediatamente antes
-// do rebalanceamento semanal atual; ela permanece congelada durante toda a semana,
-// mesmo se houver uma troca defensiva intrassemanal.
-// Valores 0..N-1 representam uma acao do universo. POSITION_CASH representa caixa;
-// POSITION_UNSET representa estado ainda nao iniciado.
+
+// ------------------------------
+// PREVISAO MOVEL DA PROXIMA DATA
+// ------------------------------
+// Nao existe calendario manual de feriados. Depois de um rebalanceamento, a previsao
+// nasce na segunda-feira seguinte. Se esse dia terminar sem um pregao B3 observado,
+// a previsao avanca para o proximo dia util de calendario e continua assim ate que
+// apareca o primeiro pregao real da semana.
+const int ONE_DAY_MS = 24 * 60 * 60 * 1000
+const int ONE_WEEK_MS = 7 * ONE_DAY_MS
+const int PLANNED_ROLL_HOUR = 18
+const int PLANNED_ROLL_MINUTE = 30
+
+f_next_weekday(int timestampValue) =>
+    int candidate = timestampValue + ONE_DAY_MS
+    int candidateDow = dayofweek(candidate, B3_TIMEZONE)
+    if candidateDow == dayofweek.saturday
+        candidate += 2 * ONE_DAY_MS
+    else if candidateDow == dayofweek.sunday
+        candidate += ONE_DAY_MS
+    candidate
+
+f_next_monday_after(int timestampValue) =>
+    int currentDow = dayofweek(timestampValue, B3_TIMEZONE)
+    int daysUntilMonday = (dayofweek.monday - currentDow + 7) % 7
+    if daysUntilMonday == 0
+        daysUntilMonday := 7
+    timestampValue + daysUntilMonday * ONE_DAY_MS
+
+f_local_midnight(int timestampValue) =>
+    timestamp(B3_TIMEZONE, year(timestampValue, B3_TIMEZONE), month(timestampValue, B3_TIMEZONE), dayofmonth(timestampValue, B3_TIMEZONE), 0, 0)
+
+f_planned_day_has_ended_without_trade(int plannedTime) =>
+    bool expired = false
+    if not na(plannedTime)
+        int plannedDay = f_local_midnight(plannedTime)
+        int nowDay = f_local_midnight(timenow)
+        bool b3TradedPlannedDay = f_same_b3_date(b3TradingDayTime, plannedTime)
+        int plannedCutoff = timestamp(B3_TIMEZONE, year(plannedTime, B3_TIMEZONE), month(plannedTime, B3_TIMEZONE), dayofmonth(plannedTime, B3_TIMEZONE), PLANNED_ROLL_HOUR, PLANNED_ROLL_MINUTE)
+        expired := not b3TradedPlannedDay and (nowDay > plannedDay or (nowDay == plannedDay and timenow >= plannedCutoff))
+    expired
+
+// Fontes de preco de fechamento para a execucao causal da carteira.
+const int CLOSE_SOURCE_LIVE = 0
+const int CLOSE_SOURCE_PREVIOUS = 1
+const int CLOSE_SOURCE_WEEKLY = 2
+
+f_close_for_event(int targetIndex, int targetEventTime, int closeSource) =>
+    float result = na
+    if targetIndex >= 0 and targetIndex < N
+        if closeSource == CLOSE_SOURCE_WEEKLY
+            result := f_weekly_snapshot_close(targetIndex, targetEventTime)
+        else if closeSource == CLOSE_SOURCE_PREVIOUS
+            int assetTime = array.get(PREVIOUS_DAY_TIME_VALUES, targetIndex)
+            if f_same_b3_date(assetTime, targetEventTime)
+                result := array.get(PREVIOUS_CLOSE_VALUES, targetIndex)
+        else
+            int assetTime = array.get(DAILY_TIME_VALUES, targetIndex)
+            if f_same_b3_date(assetTime, targetEventTime)
+                result := array.get(DAILY_CLOSE_VALUES, targetIndex)
+    result
+
+// Executa a troca no FECHAMENTO confirmado do proprio dia de decisao. A funcao
+// preserva a mesma estrutura de eventos usada pelo canal de backtest existente.
+f_try_execute_close_target(int desiredPosition, int heldPosition, int executionDayTime, int closeSource, int heldEntryTime) =>
+    bool completed = false
+    int resultingHeldPosition = heldPosition
+    int resultingHeldEntryTime = heldEntryTime
+    int previousIndexEvent = POSITION_UNSET
+    int previousEntryTimeEvent = na
+    float entryPriceEvent = na
+    int entryTimeEvent = na
+    int exitPositionEvent = POSITION_UNSET
+    float exitPriceEvent = na
+    int exitTimeEvent = na
+    int tradeTimeEvent = na
+
+    if not na(executionDayTime)
+        if heldPosition != POSITION_UNSET and desiredPosition == heldPosition
+            completed := true
+        else if heldPosition == POSITION_UNSET and desiredPosition == POSITION_CASH
+            resultingHeldPosition := POSITION_CASH
+            resultingHeldEntryTime := executionDayTime
+            completed := true
+        else
+            bool exitRequired = heldPosition >= 0 and heldPosition < N
+            bool entryRequired = desiredPosition >= 0 and desiredPosition < N
+            float exitClose = exitRequired ? f_close_for_event(heldPosition, executionDayTime, closeSource) : na
+            float entryClose = entryRequired ? f_close_for_event(desiredPosition, executionDayTime, closeSource) : na
+            bool exitReady = not exitRequired or (not na(exitClose) and exitClose > 0.0)
+            bool entryReady = not entryRequired or (not na(entryClose) and entryClose > 0.0)
+
+            if exitReady and entryReady
+                if exitRequired
+                    previousIndexEvent := heldPosition
+                    previousEntryTimeEvent := heldEntryTime
+                    exitPositionEvent := heldPosition
+                    exitPriceEvent := exitClose
+                    exitTimeEvent := executionDayTime
+
+                if entryRequired
+                    entryPriceEvent := entryClose
+                    entryTimeEvent := executionDayTime
+                    resultingHeldPosition := desiredPosition
+                    resultingHeldEntryTime := executionDayTime
+                else
+                    resultingHeldPosition := POSITION_CASH
+                    resultingHeldEntryTime := executionDayTime
+
+                tradeTimeEvent := executionDayTime
+                completed := true
+
+    [completed, resultingHeldPosition, resultingHeldEntryTime, previousIndexEvent, previousEntryTimeEvent, entryPriceEvent, entryTimeEvent, exitPositionEvent, exitPriceEvent, exitTimeEvent, tradeTimeEvent]
+
+// Tenta executar um alvo em uma abertura diaria especifica. A funcao nao altera
+// globais: devolve todo o resultado ao chamador, o que permite reutiliza-la antes
+// e depois do commit semanal sem criar duas implementacoes diferentes da mesma regra.
+f_try_execute_target(int desiredPosition, int heldPosition, int executionDayTime, bool useWeeklyExecutionData, int heldEntryTime) =>
+    bool completed = false
+    int resultingHeldPosition = heldPosition
+    int resultingHeldEntryTime = heldEntryTime
+    int previousIndexEvent = POSITION_UNSET
+    int previousEntryTimeEvent = na
+    float entryPriceEvent = na
+    int entryTimeEvent = na
+    int exitPositionEvent = POSITION_UNSET
+    float exitPriceEvent = na
+    int exitTimeEvent = na
+    int tradeTimeEvent = na
+
+    if not na(executionDayTime)
+        // Repeticao do mesmo alvo: a ordem pendente pode ser encerrada sem trade.
+        if heldPosition != POSITION_UNSET and desiredPosition == heldPosition
+            completed := true
+
+        // Inicializacao diretamente em CAIXA tambem nao gera trade economico.
+        else if heldPosition == POSITION_UNSET and desiredPosition == POSITION_CASH
+            resultingHeldPosition := POSITION_CASH
+            resultingHeldEntryTime := executionDayTime
+            completed := true
+
+        else
+            bool exitRequired = heldPosition >= 0 and heldPosition < N
+            bool entryRequired = desiredPosition >= 0 and desiredPosition < N
+
+            float exitOpen = na
+            int exitDailyTime = na
+            float entryOpen = na
+            int entryDailyTime = na
+
+            if exitRequired
+                exitOpen := useWeeklyExecutionData ? array.get(WEEKLY_EXECUTION_OPEN_VALUES, heldPosition) : array.get(DAILY_OPEN_VALUES, heldPosition)
+                exitDailyTime := useWeeklyExecutionData ? array.get(WEEKLY_EXECUTION_TIME_VALUES, heldPosition) : array.get(DAILY_TIME_VALUES, heldPosition)
+            if entryRequired
+                entryOpen := useWeeklyExecutionData ? array.get(WEEKLY_EXECUTION_OPEN_VALUES, desiredPosition) : array.get(DAILY_OPEN_VALUES, desiredPosition)
+                entryDailyTime := useWeeklyExecutionData ? array.get(WEEKLY_EXECUTION_TIME_VALUES, desiredPosition) : array.get(DAILY_TIME_VALUES, desiredPosition)
+
+            bool exitReady = not exitRequired or (not na(exitOpen) and exitOpen > 0.0 and f_same_b3_date(exitDailyTime, executionDayTime))
+            bool entryReady = not entryRequired or (not na(entryOpen) and entryOpen > 0.0 and f_same_b3_date(entryDailyTime, executionDayTime))
+
+            if exitReady and entryReady
+                if exitRequired
+                    previousIndexEvent := heldPosition
+                    previousEntryTimeEvent := heldEntryTime
+                    exitPositionEvent := heldPosition
+                    exitPriceEvent := exitOpen
+                    exitTimeEvent := executionDayTime
+
+                if entryRequired
+                    entryPriceEvent := entryOpen
+                    entryTimeEvent := executionDayTime
+                    resultingHeldPosition := desiredPosition
+                    resultingHeldEntryTime := executionDayTime
+                else
+                    resultingHeldPosition := POSITION_CASH
+                    resultingHeldEntryTime := executionDayTime
+
+                tradeTimeEvent := executionDayTime
+                completed := true
+
+    [completed, resultingHeldPosition, resultingHeldEntryTime, previousIndexEvent, previousEntryTimeEvent, entryPriceEvent, entryTimeEvent, exitPositionEvent, exitPriceEvent, exitTimeEvent, tradeTimeEvent]
+
+// Alvo atual de gerenciamento. Pode mudar no rebalanceamento ou na defesa intrassemanal.
+// IMPORTANTE: este indice e o ALVO, nao necessariamente a posicao ja executada.
 var int currentPositionIndex = POSITION_UNSET
+
+// Historico VISUAL das posicoes efetivamente executadas.
+var int currentPositionTime = na
+var int previousPositionIndex = POSITION_UNSET
+var int previousPositionTime = na
 var int previousWeeklyPositionIndex = POSITION_UNSET
+
+// SNAPSHOTS IMUTAVEIS DOS DOIS ULTIMOS REBALANCEAMENTOS PROGRAMADOS.
+var int currentWeeklySnapshotTime = na
+var int currentWeeklySnapshotIndex = POSITION_UNSET
+var int currentWeeklySnapshotRank = na
+var float currentWeeklySnapshotMomentum = na
+var int currentWeeklySnapshotState = 0
+var int currentWeeklySnapshotDiagnostic = DIAG_WARMUP
+
+var int previousWeeklySnapshotTime = na
+var int previousWeeklySnapshotIndex = POSITION_UNSET
+var int previousWeeklySnapshotRank = na
+var float previousWeeklySnapshotMomentum = na
+var int previousWeeklySnapshotState = 0
+var int previousWeeklySnapshotDiagnostic = DIAG_WARMUP
+
+// PRE-SELECAO DA PROXIMA SEMANA. Em semana normal nasce no fechamento da sexta.
+// O ticker e seus dados de escolha ficam congelados ate o primeiro pregao real seguinte.
+var int pendingWeeklySelectionIndex = POSITION_UNSET
+var int pendingWeeklySelectionDecisionTime = na
+var int pendingWeeklySelectionTargetWeekKey = na
+var int pendingWeeklySelectionRank = na
+var float pendingWeeklySelectionMomentum = na
+var int pendingWeeklySelectionState = 0
+var int pendingWeeklySelectionDiagnostic = DIAG_WARMUP
+var int lastWeeklyPreselectionTime = na
+
+// Data mostrada na linha PROXIMO REBALANCEAMENTO. Nao depende de lista de feriados.
+var int plannedNextRebalanceTime = na
+
 // ============================================================================
-// 12.1. INTERFACE SEMANAL EXCLUSIVA PARA O SCRIPT 2 / BACKTEST
+// 12.1. CANAL DE EXECUCAO / BACKTEST
 // ============================================================================
-// IMPORTANTE:
-// Estes dois estados pertencem SOMENTE ao canal de backtest. Eles sao atualizados
-// exclusivamente no rebalanceamento semanal programado. Portanto, uma troca
-// defensiva intrassemanal de currentPositionIndex NAO altera o que o Script 2 recebe.
-//
-// backtestWeeklyPositionIndex:
-//   0..N-1         -> indice da acao escolhida no rebalanceamento semanal;
-//   POSITION_CASH  -> decisao semanal foi permanecer/ir para CAIXA;
-//   POSITION_UNSET -> ainda nao ocorreu um rebalanceamento semanal processavel.
-//
-// backtestWeeklyEventTime:
-//   timestamp da barra diaria B3 em que a decisao semanal foi tomada. Ele muda em
-//   todo novo rebalanceamento, mesmo quando a mesma acao e escolhida novamente.
 var int backtestWeeklyPositionIndex = POSITION_UNSET
 var int backtestWeeklyEventTime = na
 
-// Execucao da decisao semanal. A decisao tomada no primeiro pregao da semana fica
-// pendente e so e transformada em entrada/saida na abertura do proximo pregao B3.
-// Isso evita usar o fechamento que participa do calculo do sinal como preco de
-// execucao conhecido antecipadamente.
+// Fila legada mantida apenas para compatibilidade com estados antigos. A V44 nao
+// usa esta fila para o novo rebalanceamento semanal; a execucao semanal usa diretamente
+// a abertura congelada do primeiro pregao da semana.
 var int backtestPendingPositionIndex = POSITION_UNSET
 var int backtestPendingDecisionTime = na
+// Se uma ordem anterior ainda nao conseguiu ser executada, a nova decisao semanal
+// fica nesta segunda fila em vez de apagar silenciosamente a ordem mais antiga.
+var int backtestQueuedWeeklyPositionIndex = POSITION_UNSET
+var int backtestQueuedWeeklyDecisionTime = na
 var int backtestHeldPositionIndex = POSITION_UNSET
 
-// Os campos abaixo sao EVENTOS: ficam preenchidos apenas na barra em que uma
-// entrada/saida realmente e executada. O Script 2 deve processar a barra quando
-// BT_TRADE_EVENT nao for na.
+// Eventos sao series efemeras: voltam a na/UNSET em toda barra sem nova execucao.
 float backtestEntryPriceEvent = na
 int backtestEntryTimeEvent = na
 int backtestExitPositionEvent = POSITION_UNSET
 float backtestExitPriceEvent = na
 int backtestExitTimeEvent = na
 int backtestTradeEventTime = na
-// ------------------------------
-// A) REBALANCEAMENTO PROGRAMADO
-// ------------------------------
-if newB3TradingWeek
-    // Antes de registrar o novo evento, desloca o ciclo semanal vigente para o
-    // historico ANTERIOR. Assim a data anterior e a acao anterior permanecem
-    // coerentes entre si durante toda a semana seguinte.
-    previousWeeklyRebalanceTime := lastWeeklyRebalanceTime
-    previousWeeklyPositionIndex := currentPositionIndex
-    // Registra a data REAL do primeiro pregao da semana em que o rebalanceamento
-    // atual foi executado. Se segunda-feira for feriado, esta data sera o primeiro
-    // pregao efetivamente recebido pelo calendario B3.
-    lastWeeklyRebalanceTime := b3TradingDayTime
-    // Melhor acao do instante: maior Momentum entre todas as que estao em ALTA.
-    int weeklyBestIndex = f_best_high_momentum_index()
-    // Se houver candidata, ela vira a posicao atual.
-    // Se nao houver nenhuma acao em ALTA com Momentum valido, a carteira vai para CAIXA.
-    if weeklyBestIndex != -1
-        currentPositionIndex := weeklyBestIndex
-        // Publica para o Script 2 SOMENTE a decisao tomada neste rebalanceamento.
-        backtestWeeklyPositionIndex := weeklyBestIndex
-    else
-        currentPositionIndex := POSITION_CASH
-        // CAIXA tambem e uma decisao semanal valida para o backtest.
-        backtestWeeklyPositionIndex := POSITION_CASH
-    // Identifica inequivocamente este evento semanal. Mesmo que a mesma acao seja
-    // escolhida em semanas consecutivas, este timestamp sera diferente.
-    backtestWeeklyEventTime := b3TradingDayTime
-
-    // Agenda a EXECUCAO do backtest para o primeiro pregao posterior.
-    // O sinal continua sendo exclusivamente semanal; isto apenas define quando o
-    // preco efetivamente negociavel sera capturado para entrada/saida.
-    backtestPendingPositionIndex := backtestWeeklyPositionIndex
-    backtestPendingDecisionTime := b3TradingDayTime
 
 // -----------------------------------------------------------------------------
-// A.1) EXECUCAO DA DECISAO SEMANAL NO PROXIMO PREGAO
+// PRE-SELECAO NO FECHAMENTO DA SEXTA-FEIRA
 // -----------------------------------------------------------------------------
-// A execucao ocorre apenas depois da data da decisao. Se um ativo nao possuir uma
-// abertura nova nesse dia, a ordem permanece pendente ate existir preco valido.
+// A escolha usa exatamente o mesmo filtro do TOP 5. Ela fica imutavel ate a abertura
+// do primeiro pregao da semana seguinte; feriados nao provocam novo calculo.
+bool currentB3DayIsFriday = not na(b3TradingDayTime) and dayofweek(b3TradingDayTime, B3_TIMEZONE) == dayofweek.friday
+bool fridayCloseReady = b3CurrentDailyCloseConfirmed and currentB3DayIsFriday
+bool fridayAlreadyFrozen = not na(lastWeeklyPreselectionTime) and f_same_b3_date(lastWeeklyPreselectionTime, b3TradingDayTime)
+
+if fridayCloseReady and not fridayAlreadyFrozen
+    int fridayBestIndex = f_best_high_momentum_index()
+    int fridayDecisionIndex = fridayBestIndex != -1 ? fridayBestIndex : POSITION_CASH
+
+    pendingWeeklySelectionIndex := fridayDecisionIndex
+    pendingWeeklySelectionDecisionTime := b3TradingDayTime
+    pendingWeeklySelectionTargetWeekKey := not na(b3WeeklySnapshotWeekKey) ? b3WeeklySnapshotWeekKey + ONE_WEEK_MS : na
+    pendingWeeklySelectionRank := fridayDecisionIndex >= 0 and fridayDecisionIndex < N ? f_eligible_high_momentum_rank(fridayDecisionIndex) : na
+    pendingWeeklySelectionMomentum := fridayDecisionIndex >= 0 and fridayDecisionIndex < N ? array.get(MOMENTUM_VALUES, fridayDecisionIndex) : na
+    pendingWeeklySelectionState := fridayDecisionIndex >= 0 and fridayDecisionIndex < N ? array.get(TREND_STATES, fridayDecisionIndex) : 0
+    pendingWeeklySelectionDiagnostic := fridayDecisionIndex >= 0 and fridayDecisionIndex < N ? array.get(DIAG_CODES, fridayDecisionIndex) : DIAG_WARMUP
+    lastWeeklyPreselectionTime := b3TradingDayTime
+
+    // Em sexta-feira a previsao da semana seguinte nasce na segunda-feira.
+    plannedNextRebalanceTime := f_next_monday_after(b3TradingDayTime)
+
+// Se a data prevista terminou sem nenhum pregao, avanca somente a DATA.
+// A acao pre-selecionada acima permanece exatamente a mesma.
+if barstate.islast and not na(plannedNextRebalanceTime)
+    for rollStep = 0 to 6
+        if f_planned_day_has_ended_without_trade(plannedNextRebalanceTime)
+            plannedNextRebalanceTime := f_next_weekday(plannedNextRebalanceTime)
+        else
+            break
+
+// -----------------------------------------------------------------------------
+// A) COMPATIBILIDADE COM EVENTUAL ALVO PENDENTE DA ESTRUTURA LEGADA
+// -----------------------------------------------------------------------------
+// A V44 nao cria novas ordens pendentes para o rebalanceamento semanal. Este bloco
+// permanece neutro em uma execucao nova e existe apenas por compatibilidade estrutural.
 bool backtestHasPendingExecution = backtestPendingPositionIndex != POSITION_UNSET and not na(backtestPendingDecisionTime)
-bool backtestIsLaterTradingDay = not na(b3TradingDayTime) and b3TradingDayTime > backtestPendingDecisionTime
+bool pendingMatchesWeeklyDecision = backtestHasPendingExecution and not na(backtestWeeklyEventTime) and f_same_b3_date(backtestPendingDecisionTime, backtestWeeklyEventTime)
+bool exactWeeklyExecutionAvailable = pendingMatchesWeeklyDecision and not na(lastProcessedRebalanceWeekKey) and not na(b3WeeklyExecutionWeekKey) and b3WeeklyExecutionWeekKey == lastProcessedRebalanceWeekKey and not na(b3WeeklyExecutionTime) and b3WeeklyExecutionTime > backtestPendingDecisionTime
+bool genericLaterTradingDay = backtestHasPendingExecution and not na(b3TradingDayTime) and b3TradingDayTime > backtestPendingDecisionTime and not f_same_b3_date(b3TradingDayTime, backtestPendingDecisionTime)
+bool pendingCanExecuteNow = exactWeeklyExecutionAvailable or genericLaterTradingDay
 
-if backtestHasPendingExecution and backtestIsLaterTradingDay
-    int desiredPosition = backtestPendingPositionIndex
-    int heldPosition = backtestHeldPositionIndex
+if backtestHasPendingExecution and pendingCanExecuteNow
+    int executionDayTime = exactWeeklyExecutionAvailable ? b3WeeklyExecutionTime : b3TradingDayTime
+    bool useWeeklyExecutionData = exactWeeklyExecutionAvailable
+    [executionCompleted, resultingHeldPosition, resultingHeldEntryTime, previousIndexEvent, previousEntryTimeEvent, entryPriceEvent, entryTimeEvent, exitPositionEvent, exitPriceEvent, exitTimeEvent, tradeTimeEvent] = f_try_execute_target(backtestPendingPositionIndex, backtestHeldPositionIndex, executionDayTime, useWeeklyExecutionData, currentPositionTime)
 
-    // Uma repeticao semanal do mesmo ticker e uma nova DECISAO, mas nao gera
-    // venda/recompra nem altera preco/data da entrada original.
-    if heldPosition != POSITION_UNSET and desiredPosition == heldPosition
+    if executionCompleted
+        backtestHeldPositionIndex := resultingHeldPosition
+        currentPositionTime := resultingHeldEntryTime
+
+        if previousIndexEvent != POSITION_UNSET
+            previousPositionIndex := previousIndexEvent
+            previousPositionTime := previousEntryTimeEvent
+
+        if not na(entryTimeEvent)
+            backtestEntryPriceEvent := entryPriceEvent
+            backtestEntryTimeEvent := entryTimeEvent
+        if exitPositionEvent != POSITION_UNSET
+            backtestExitPositionEvent := exitPositionEvent
+            backtestExitPriceEvent := exitPriceEvent
+            backtestExitTimeEvent := exitTimeEvent
+        if not na(tradeTimeEvent)
+            backtestTradeEventTime := tradeTimeEvent
+
         backtestPendingPositionIndex := POSITION_UNSET
         backtestPendingDecisionTime := na
 
-    else if heldPosition == POSITION_UNSET and desiredPosition == POSITION_CASH
-        // Primeira decisao processavel pode ser CAIXA. Nao existe operacao.
-        backtestHeldPositionIndex := POSITION_CASH
-        backtestPendingPositionIndex := POSITION_UNSET
-        backtestPendingDecisionTime := na
+        // Se havia uma decisao semanal aguardando a conclusao desta ordem, promove-a
+        // agora para o canal principal. A abertura semanal exata continua preservada.
+        if backtestQueuedWeeklyPositionIndex != POSITION_UNSET and not na(backtestQueuedWeeklyDecisionTime)
+            backtestPendingPositionIndex := backtestQueuedWeeklyPositionIndex
+            backtestPendingDecisionTime := backtestQueuedWeeklyDecisionTime
+            backtestQueuedWeeklyPositionIndex := POSITION_UNSET
+            backtestQueuedWeeklyDecisionTime := na
 
+// ------------------------------
+// A.1) REBALANCEAMENTO PROGRAMADO
+// ------------------------------
+// A data REAL e o primeiro pregao efetivamente observado. A acao vem da sexta-feira
+// anterior e nao e recalculada por causa de segunda/terca sem negociacao. Se nao houve
+// barra na sexta-feira, usa-se como fallback o ultimo fechamento confirmado disponivel.
+if rebalanceCommit
+    int exactRebalanceTime = rebalanceSnapshotTime
+    int weeklyDecisionIndex = POSITION_CASH
+    int weeklyDecisionRank = na
+    float weeklyDecisionMomentum = na
+    int weeklyDecisionState = 0
+    int weeklyDecisionDiagnostic = DIAG_WARMUP
+
+    bool frozenSelectionMatchesWeek = pendingWeeklySelectionIndex != POSITION_UNSET and not na(pendingWeeklySelectionTargetWeekKey) and pendingWeeklySelectionTargetWeekKey == rebalanceSnapshotWeekKey
+
+    if frozenSelectionMatchesWeek
+        weeklyDecisionIndex := pendingWeeklySelectionIndex
+        weeklyDecisionRank := pendingWeeklySelectionRank
+        weeklyDecisionMomentum := pendingWeeklySelectionMomentum
+        weeklyDecisionState := pendingWeeklySelectionState
+        weeklyDecisionDiagnostic := pendingWeeklySelectionDiagnostic
     else
-        bool exitRequired = heldPosition >= 0 and heldPosition < N
-        bool entryRequired = desiredPosition >= 0 and desiredPosition < N
+        // Fallback causal para semana em que sexta-feira nao teve barra: usa o ultimo
+        // pregao confirmado antes da abertura desta nova semana.
+        int fallbackBestIndex = f_best_previous_day_index(b3PreviousTradingDayTime)
+        weeklyDecisionIndex := fallbackBestIndex != -1 ? fallbackBestIndex : POSITION_CASH
+        if weeklyDecisionIndex >= 0 and weeklyDecisionIndex < N
+            weeklyDecisionRank := f_previous_day_rank(weeklyDecisionIndex, b3PreviousTradingDayTime)
+            weeklyDecisionMomentum := array.get(PREVIOUS_MOMENTUM_VALUES, weeklyDecisionIndex)
+            weeklyDecisionState := array.get(PREVIOUS_TREND_STATES, weeklyDecisionIndex)
+            weeklyDecisionDiagnostic := array.get(PREVIOUS_DIAG_CODES, weeklyDecisionIndex)
 
-        float exitOpen = na
-        int exitDailyTime = na
-        float entryOpen = na
-        int entryDailyTime = na
+    // Executa pela abertura congelada do PRIMEIRO PREGAO real da semana.
+    [weeklyExecutionCompleted, weeklyResultingHeldPosition, weeklyResultingHeldEntryTime, weeklyPreviousIndexEvent, weeklyPreviousEntryTimeEvent, weeklyEntryPriceEvent, weeklyEntryTimeEvent, weeklyExitPositionEvent, weeklyExitPriceEvent, weeklyExitTimeEvent, weeklyTradeTimeEvent] = f_try_execute_target(weeklyDecisionIndex, backtestHeldPositionIndex, exactRebalanceTime, true, currentPositionTime)
 
-        // Evita qualquer acesso de array com sentinelas -1/-2.
-        if exitRequired
-            exitOpen := array.get(DAILY_OPEN_VALUES, heldPosition)
-            exitDailyTime := array.get(DAILY_TIME_VALUES, heldPosition)
-        if entryRequired
-            entryOpen := array.get(DAILY_OPEN_VALUES, desiredPosition)
-            entryDailyTime := array.get(DAILY_TIME_VALUES, desiredPosition)
+    if weeklyExecutionCompleted
+        lastProcessedRebalanceWeekKey := rebalanceSnapshotWeekKey
 
-        // Exige barra diaria NOVA do proprio ativo para impedir uso de abertura
-        // carregada por gaps_off quando o ativo nao negociou naquele pregao.
-        bool exitReady = not exitRequired or (not na(exitOpen) and exitOpen > 0.0 and exitDailyTime == b3TradingDayTime)
-        bool entryReady = not entryRequired or (not na(entryOpen) and entryOpen > 0.0 and entryDailyTime == b3TradingDayTime)
+        // Move o snapshot semanal anterior e registra a DATA REAL do primeiro pregao.
+        previousWeeklySnapshotTime := currentWeeklySnapshotTime
+        previousWeeklySnapshotIndex := currentWeeklySnapshotIndex
+        previousWeeklySnapshotRank := currentWeeklySnapshotRank
+        previousWeeklySnapshotMomentum := currentWeeklySnapshotMomentum
+        previousWeeklySnapshotState := currentWeeklySnapshotState
+        previousWeeklySnapshotDiagnostic := currentWeeklySnapshotDiagnostic
 
-        if exitReady and entryReady
-            if exitRequired
-                backtestExitPositionEvent := heldPosition
-                backtestExitPriceEvent := exitOpen
-                backtestExitTimeEvent := b3TradingDayTime
+        previousWeeklyRebalanceTime := currentWeeklySnapshotTime
+        previousWeeklyPositionIndex := currentWeeklySnapshotIndex
 
-            if entryRequired
-                backtestEntryPriceEvent := entryOpen
-                backtestEntryTimeEvent := b3TradingDayTime
-                backtestHeldPositionIndex := desiredPosition
-            else
-                // desiredPosition == POSITION_CASH.
-                backtestHeldPositionIndex := POSITION_CASH
+        currentWeeklySnapshotTime := exactRebalanceTime
+        currentWeeklySnapshotIndex := weeklyDecisionIndex
+        currentWeeklySnapshotRank := weeklyDecisionRank
+        currentWeeklySnapshotMomentum := weeklyDecisionMomentum
+        currentWeeklySnapshotState := weeklyDecisionState
+        currentWeeklySnapshotDiagnostic := weeklyDecisionDiagnostic
+        lastWeeklyRebalanceTime := exactRebalanceTime
 
-            // Uma mudanca CAIXA->ACAO, ACAO->CAIXA ou ACAO->ACAO produz um evento.
-            backtestTradeEventTime := b3TradingDayTime
-            backtestPendingPositionIndex := POSITION_UNSET
-            backtestPendingDecisionTime := na
+        currentPositionIndex := weeklyDecisionIndex
+        backtestWeeklyPositionIndex := weeklyDecisionIndex
+        backtestWeeklyEventTime := exactRebalanceTime
+        backtestHeldPositionIndex := weeklyResultingHeldPosition
+        currentPositionTime := weeklyResultingHeldEntryTime
+
+        if weeklyPreviousIndexEvent != POSITION_UNSET
+            previousPositionIndex := weeklyPreviousIndexEvent
+            previousPositionTime := weeklyPreviousEntryTimeEvent
+
+        if not na(weeklyEntryTimeEvent)
+            backtestEntryPriceEvent := weeklyEntryPriceEvent
+            backtestEntryTimeEvent := weeklyEntryTimeEvent
+        if weeklyExitPositionEvent != POSITION_UNSET
+            backtestExitPositionEvent := weeklyExitPositionEvent
+            backtestExitPriceEvent := weeklyExitPriceEvent
+            backtestExitTimeEvent := weeklyExitTimeEvent
+        if not na(weeklyTradeTimeEvent)
+            backtestTradeEventTime := weeklyTradeTimeEvent
+
+        // O evento que estava em PROXIMO virou REBALANCEAMENTO ATUAL.
+        // A linha PROXIMO deve desaparecer agora e so nascer novamente no
+        // fechamento confirmado da proxima sexta-feira.
+        plannedNextRebalanceTime := na
+
+        // A selecao consumida nao pode ser reutilizada em outra semana.
+        pendingWeeklySelectionIndex := POSITION_UNSET
+        pendingWeeklySelectionDecisionTime := na
+        pendingWeeklySelectionTargetWeekKey := na
+        pendingWeeklySelectionRank := na
+        pendingWeeklySelectionMomentum := na
+        pendingWeeklySelectionState := 0
+        pendingWeeklySelectionDiagnostic := DIAG_WARMUP
+    else
+        // Se algum preco de abertura estiver ausente, preserva a selecao e tenta de novo
+        // com a mesma abertura semanal congelada, sem recalcular o ticker.
+        currentPositionIndex := backtestHeldPositionIndex
+
+// ----------------------------------------------------------------------------
+// A.2) DATA PLANEJADA x DATA REAL
+// ----------------------------------------------------------------------------
+// Exemplo: sexta seleciona a acao e mostra segunda. Se segunda e terca nao tiverem
+// pregao, a data visual avanca para terca e depois quarta, mas a acao permanece a mesma.
+// Quando quarta abrir, currentWeeklySnapshotTime recebe quarta e o rebalanceamento
+// anterior passa a ser o ultimo PRIMEIRO PREGAO efetivamente executado.
 
 // -----------------------------------------
 // B) SAIDA DEFENSIVA FORA DO REBALANCEAMENTO
 // -----------------------------------------
-// Esta verificacao roda em todas as atualizacoes. Ela NAO troca uma acao que continue
-// em ALTA apenas porque outra passou a ter Momentum maior; essa troca continua semanal.
-// A unica troca intrassemanal ocorre quando a posicao atual deixa de estar em ALTA.
-if not newB3TradingWeek and currentPositionIndex >= 0 and currentPositionIndex < N
-    int heldState = array.get(TREND_STATES, currentPositionIndex)
-    int heldDiagnostic = array.get(DIAG_CODES, currentPositionIndex)
-    // "Continuar em ALTA" exige diagnostico OK e estado TREND_UP.
-    // BAIXA, N/D ou falha de dados sao tratados como saida da condicao de ALTA.
-    bool heldStillHigh = heldDiagnostic == DIAG_OK and heldState == TREND_UP
+// Regra: mudancas intradiarias NAO trocam a carteira. Somente depois que o fechamento
+// B3 estiver confirmado verificamos a posicao efetivamente carregada. Se ela terminar
+// BAIXA ou N/D, a troca e feita pelo fechamento desse mesmo pregao para o melhor ativo
+// que terminou DIAG_OK + ALTA + Momentum valido. Se nenhum existir, a carteira vai a CAIXA.
+// Se o script nao recebeu atualizacao no fechamento, o mesmo evento e reconstruido no
+// pregao seguinte usando os arrays PREVIOUS_* e os precos de fechamento preservados.
+var int lastDefensiveDecisionTime = na
+bool noExecutionQueueBlockingDefense = backtestPendingPositionIndex == POSITION_UNSET and backtestQueuedWeeklyPositionIndex == POSITION_UNSET
+
+bool currentDefensiveDayAvailable = b3CurrentDailyCloseConfirmed and not na(b3TradingDayTime)
+bool currentDefensiveDayAlreadyChecked = not na(lastDefensiveDecisionTime) and f_same_b3_date(lastDefensiveDecisionTime, b3TradingDayTime)
+bool canCheckCurrentDefensiveDay = systemWarmedUp and supportedRebalanceTimeframe and noExecutionQueueBlockingDefense and currentDefensiveDayAvailable and not currentDefensiveDayAlreadyChecked
+
+bool previousDefensiveDayAvailable = not canCheckCurrentDefensiveDay and supportedRebalanceTimeframe and not na(b3PreviousTradingDayTime) and not na(b3TradingDayTime) and b3TradingDayTime > b3PreviousTradingDayTime
+bool previousDefensiveDayAlreadyChecked = not na(lastDefensiveDecisionTime) and f_same_b3_date(lastDefensiveDecisionTime, b3PreviousTradingDayTime)
+bool canCheckPreviousDefensiveDay = systemWarmedUp and noExecutionQueueBlockingDefense and previousDefensiveDayAvailable and not previousDefensiveDayAlreadyChecked
+
+int defensiveDecisionTime = canCheckCurrentDefensiveDay ? b3TradingDayTime : canCheckPreviousDefensiveDay ? b3PreviousTradingDayTime : na
+int defensiveCloseSource = canCheckCurrentDefensiveDay ? CLOSE_SOURCE_LIVE : CLOSE_SOURCE_PREVIOUS
+
+if not na(defensiveDecisionTime) and backtestHeldPositionIndex >= 0 and backtestHeldPositionIndex < N
+    lastDefensiveDecisionTime := defensiveDecisionTime
+
+    int managedPositionIndex = backtestHeldPositionIndex
+    int heldDecisionTime = canCheckCurrentDefensiveDay ? array.get(DAILY_TIME_VALUES, managedPositionIndex) : array.get(PREVIOUS_DAY_TIME_VALUES, managedPositionIndex)
+    int heldState = canCheckCurrentDefensiveDay ? array.get(TREND_STATES, managedPositionIndex) : array.get(PREVIOUS_TREND_STATES, managedPositionIndex)
+    int heldDiagnostic = canCheckCurrentDefensiveDay ? array.get(DIAG_CODES, managedPositionIndex) : array.get(PREVIOUS_DIAG_CODES, managedPositionIndex)
+    bool heldHasCorrectDay = f_same_b3_date(heldDecisionTime, defensiveDecisionTime)
+    bool heldStillHigh = heldHasCorrectDay and heldDiagnostic == DIAG_OK and heldState == TREND_UP
+
     if not heldStillHigh
-        // Uma troca defensiva altera apenas a posicao ATUAL. O registro do ciclo
-        // semanal ANTERIOR permanece congelado e nao e sobrescrito aqui.
-        // Procura imediatamente o novo melhor Momentum entre as acoes em ALTA.
-        int replacementIndex = f_best_high_momentum_index()
-        // Se houver substituta, troca para ela. Se nao houver, fica em CAIXA.
-        if replacementIndex != -1
-            currentPositionIndex := replacementIndex
-        else
-            currentPositionIndex := POSITION_CASH
+        int replacementIndex = canCheckCurrentDefensiveDay ? f_best_high_momentum_index() : f_best_previous_day_index(defensiveDecisionTime)
+        int newTarget = replacementIndex != -1 ? replacementIndex : POSITION_CASH
+
+        if newTarget != managedPositionIndex
+            currentPositionIndex := newTarget
+            [defExecutionCompleted, defResultingHeldPosition, defResultingHeldEntryTime, defPreviousIndexEvent, defPreviousEntryTimeEvent, defEntryPriceEvent, defEntryTimeEvent, defExitPositionEvent, defExitPriceEvent, defExitTimeEvent, defTradeTimeEvent] = f_try_execute_close_target(newTarget, backtestHeldPositionIndex, defensiveDecisionTime, defensiveCloseSource, currentPositionTime)
+
+            if defExecutionCompleted
+                backtestHeldPositionIndex := defResultingHeldPosition
+                currentPositionTime := defResultingHeldEntryTime
+
+                if defPreviousIndexEvent != POSITION_UNSET
+                    previousPositionIndex := defPreviousIndexEvent
+                    previousPositionTime := defPreviousEntryTimeEvent
+
+                if not na(defEntryTimeEvent)
+                    backtestEntryPriceEvent := defEntryPriceEvent
+                    backtestEntryTimeEvent := defEntryTimeEvent
+                if defExitPositionEvent != POSITION_UNSET
+                    backtestExitPositionEvent := defExitPositionEvent
+                    backtestExitPriceEvent := defExitPriceEvent
+                    backtestExitTimeEvent := defExitTimeEvent
+                if not na(defTradeTimeEvent)
+                    backtestTradeEventTime := defTradeTimeEvent
+            else
+                currentPositionIndex := backtestHeldPositionIndex
+
 // ============================================================================
 // 13. TABELA TOP 5: MELHORES MOMENTUM SOMENTE ENTRE ACOES EM ALTA
 // ============================================================================
@@ -711,10 +1322,10 @@ if barstate.islast
         table.cell(top5Table, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT)
         // Cabecalho dinamico do periodo do Momentum.
         string momentumHeader = "MOMENTUM " + str.tostring(MOMENTUM_PERIOD) + "D"
-        table.cell(top5Table, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(top5Table, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(top5Table, 2, 1, momentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(top5Table, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        table.cell(top5Table, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(top5Table, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(top5Table, 2, 1, momentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+        table.cell(top5Table, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
         // Impede repeticao do mesmo ticker nas cinco passagens.
         array<bool> usedTop5 = array.new_bool(N, false)
         // Seleciona as cinco melhores acoes em ALTA, uma por passagem.
@@ -738,141 +1349,166 @@ if barstate.islast
                 // Como toda acao do TOP 5 obrigatoriamente esta em ALTA, usamos a
                 // mesma cor verde de estado na linha inteira.
                 color rowBg = f_state_bg(TREND_UP, DIAG_OK)
-                table.cell(top5Table, 0, rankPos + 2, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(top5Table, 1, rankPos + 2, array.get(NAMES, bestIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(top5Table, 2, rankPos + 2, str.tostring(bestMomentum * 100.0, "#.##") + "%", bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(top5Table, 3, rankPos + 2, "ALTA", bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(top5Table, 0, rankPos + 2, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(top5Table, 1, rankPos + 2, array.get(NAMES, bestIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(top5Table, 2, rankPos + 2, str.tostring(bestMomentum * 100.0, "#.##") + "%", bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+                table.cell(top5Table, 3, rankPos + 2, "ALTA", bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
 // ============================================================================
-// 14. TABELA PEQUENA DA CARTEIRA: REBALANCEAMENTO ATUAL E ANTERIOR
+// 14. TABELA DE GERENCIAMENTO DA CARTEIRA
 // ============================================================================
-// Esta tabela aparece JUNTO do TOP 5 e desaparece nas outras visualizacoes.
-//
-// O painel possui EXATAMENTE quatro linhas:
-// 1) REBALANCEAMENTO ATUAL + data real do ultimo evento semanal programado;
-// 2) acao atualmente mantida + rank global atual + Momentum atual + estado atual;
-// 3) REBALANCEAMENTO ANTERIOR + data real do evento semanal anterior;
-// 4) acao do ciclo semanal anterior + rank global atual + Momentum atual + estado atual.
-//
-// Nao existe mais a coluna POSICAO. O estado ALTA/BAIXA/N/D permanece.
-// Ranking, Momentum e estado das linhas de acao usam os dados mais recentes.
-// A identidade da linha ANTERIOR fica congelada ate o proximo rebalanceamento semanal.
+// POSICAO ATUAL usa a CUSTODIA EXECUTADA (backtestHeldPositionIndex) + data real de entrada.
+// POSICAO ANTERIOR usa a ultima custodia encerrada + a data real em que ela havia entrado.
+// PROXIMA POSICAO e apenas uma PREVISAO congelada no fechamento confirmado da sexta-feira:
+// - aparece em duas linhas, no mesmo formato das posicoes atual/anterior;
+// - mostra a data planejada, Rank/Momentum/Estado congelados e a acao pre-selecionada;
+// - fica visivel enquanto a ultima sessao B3 confirmada continua sendo a sexta-feira;
+// - some assim que o primeiro pregao real da nova semana se inicia e a selecao e executada.
+// Nenhuma linha de REBALANCEAMENTO ATUAL/ANTERIOR e desenhada nesta tabela.
 // ============================================================================
 var table portfolioTable = na
+var bool portfolioTableHasNextPosition = false
 if barstate.islast
-    // A tabela de carteira so acompanha a visualizacao TOP 5.
     if TABLE_VIEW != "TOP 5"
         if not na(portfolioTable)
             table.delete(portfolioTable)
             portfolioTable := na
+        portfolioTableHasNextPosition := false
     else
-        // Quatro colunas e quatro linhas, sem cabecalho separado.
-        // As linhas de data identificam o bloco; as linhas de acao mantem
-        // RANK | ACAO | MOMENTUM | ESTADO.
+        // A PROXIMA POSICAO nasce somente depois do fechamento confirmado da sexta-feira.
+        // Durante fim de semana/feriado, se a ultima sessao confirmada ainda for sexta,
+        // ela continua visivel; no primeiro novo pregao real, deixa de ser "proxima".
+        bool showNextPosition = fridayCloseReady and not na(plannedNextRebalanceTime) and pendingWeeklySelectionIndex != POSITION_UNSET
+        int portfolioRows = showNextPosition ? 7 : 5
+
+        // Pine nao redimensiona table.new(). Recriamos a tabela apenas quando a secao
+        // PROXIMA POSICAO precisa aparecer ou desaparecer; os dados das demais linhas
+        // permanecem exatamente com a mesma fonte de verdade.
+        if not na(portfolioTable) and portfolioTableHasNextPosition != showNextPosition
+            table.delete(portfolioTable)
+            portfolioTable := na
+
         if na(portfolioTable)
-            portfolioTable := table.new(position.top_right, 4, 4, bgcolor = TABLE_PANEL_BG, frame_color = TABLE_BORDER_COLOR, frame_width = 1, border_color = TABLE_BORDER_COLOR, border_width = 1)
-        // Limpa a tabela inteira antes de redesenhar.
-        for clearRow = 0 to 3
+            portfolioTable := table.new(position.top_right, 4, portfolioRows, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
+            table.merge_cells(portfolioTable, 0, 0, 3, 0)
+            portfolioTableHasNextPosition := showNextPosition
+
+        for clearRow = 1 to portfolioRows - 1
             for clearCol = 0 to 3
                 table.cell(portfolioTable, clearCol, clearRow, "", bgcolor = TABLE_PANEL_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+
+        table.cell(portfolioTable, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT, text_halign = text.align_center)
+
         string portfolioMomentumHeader = "MOMENTUM " + str.tostring(MOMENTUM_PERIOD) + "D"
-        color rebalanceBg = TABLE_INFO_BG
-        // --------------------------------------------------------------------
-        // LINHA 1: data do REBALANCEAMENTO ATUAL.
-        // --------------------------------------------------------------------
-        string currentRebalanceText = f_date_text(lastWeeklyRebalanceTime)
-        table.cell(portfolioTable, 0, 0, "REBAL. ATUAL", bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(portfolioTable, 1, 0, currentRebalanceText, bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(portfolioTable, 2, 0, "RANK / " + portfolioMomentumHeader, bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(portfolioTable, 3, 0, "ESTADO", bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        // --------------------------------------------------------------------
-        // LINHA 2: acao ATUAL.
-        // Mantem rank, ticker, Momentum e estado. Remove apenas a antiga coluna
-        // POSICAO, pois o bloco acima ja informa que este e o ciclo ATUAL.
-        // --------------------------------------------------------------------
-        if currentPositionIndex >= 0 and currentPositionIndex < N
-            int currentRank = f_global_momentum_rank(currentPositionIndex)
-            float currentMomentum = array.get(MOMENTUM_VALUES, currentPositionIndex)
-            int currentState = array.get(TREND_STATES, currentPositionIndex)
-            int currentDiagnostic = array.get(DIAG_CODES, currentPositionIndex)
-            string currentRankText = na(currentRank) ? "N/D" : str.tostring(currentRank) + "º"
-            string currentMomentumText = na(currentMomentum) ? "N/D" : str.tostring(currentMomentum * 100.0, "#.##") + "%"
-            string currentStateText = f_state_text(currentState, currentDiagnostic)
-            color currentBg = f_state_bg(currentState, currentDiagnostic)
-            table.cell(portfolioTable, 0, 1, currentRankText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 1, 1, array.get(NAMES, currentPositionIndex), bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 2, 1, currentMomentumText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 3, 1, currentStateText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        else if currentPositionIndex == POSITION_CASH
-            color cashBg = TABLE_CASH_BG
-            table.cell(portfolioTable, 0, 1, "-", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 1, 1, "CAIXA", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 2, 1, "-", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 3, 1, "CAIXA", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+        color infoBg = TABLE_INFO_BG
+
+        // POSICAO ATUAL: custodia efetivamente executada e sua data real de entrada.
+        string currentPositionDateText = f_date_text(currentPositionTime)
+        table.cell(portfolioTable, 0, 1, "POSICAO ATUAL", bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(portfolioTable, 1, 1, currentPositionDateText, bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(portfolioTable, 2, 1, "RANK / " + portfolioMomentumHeader, bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+        table.cell(portfolioTable, 3, 1, "ESTADO", bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+
+        if backtestHeldPositionIndex >= 0 and backtestHeldPositionIndex < N
+            int currentLiveRank = f_eligible_high_momentum_rank(backtestHeldPositionIndex)
+            float currentLiveMomentum = array.get(MOMENTUM_VALUES, backtestHeldPositionIndex)
+            int currentLiveState = array.get(TREND_STATES, backtestHeldPositionIndex)
+            int currentLiveDiagnostic = array.get(DIAG_CODES, backtestHeldPositionIndex)
+            string currentRankText = na(currentLiveRank) ? "N/D" : str.tostring(currentLiveRank) + "º"
+            string currentMomentumText = na(currentLiveMomentum) ? "N/D" : str.tostring(currentLiveMomentum * 100.0, "#.##") + "%"
+            string currentStateText = f_state_text(currentLiveState, currentLiveDiagnostic)
+            color currentBg = f_state_bg(currentLiveState, currentLiveDiagnostic)
+            table.cell(portfolioTable, 0, 2, currentRankText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 1, 2, array.get(NAMES, backtestHeldPositionIndex), bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 2, 2, currentMomentumText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+            table.cell(portfolioTable, 3, 2, currentStateText, bgcolor = currentBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        else if backtestHeldPositionIndex == POSITION_CASH
+            table.cell(portfolioTable, 0, 2, "-", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 1, 2, "CAIXA", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 2, 2, "-", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+            table.cell(portfolioTable, 3, 2, "CAIXA", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
         else
-            color emptyBg = TABLE_ND_BG
-            table.cell(portfolioTable, 0, 1, "-", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 1, 1, "N/D", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 2, 1, "-", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 3, 1, "N/D", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        // --------------------------------------------------------------------
-        // LINHA 3: data do REBALANCEAMENTO ANTERIOR.
-        // --------------------------------------------------------------------
-        string previousRebalanceText = f_date_text(previousWeeklyRebalanceTime)
-        table.cell(portfolioTable, 0, 2, "REBAL. ANTERIOR", bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(portfolioTable, 1, 2, previousRebalanceText, bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(portfolioTable, 2, 2, "RANK / " + portfolioMomentumHeader, bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(portfolioTable, 3, 2, "ESTADO", bgcolor = rebalanceBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        // --------------------------------------------------------------------
-        // LINHA 4: acao do ciclo semanal ANTERIOR.
-        // O rank, o Momentum e o estado mostrados sao os valores ATUAIS dessa
-        // acao, para permitir comparar onde ela se encontra hoje.
-        // --------------------------------------------------------------------
-        if previousWeeklyPositionIndex >= 0 and previousWeeklyPositionIndex < N
-            int previousRank = f_global_momentum_rank(previousWeeklyPositionIndex)
-            float previousMomentum = array.get(MOMENTUM_VALUES, previousWeeklyPositionIndex)
-            int previousState = array.get(TREND_STATES, previousWeeklyPositionIndex)
-            int previousDiagnostic = array.get(DIAG_CODES, previousWeeklyPositionIndex)
-            string previousRankText = na(previousRank) ? "N/D" : str.tostring(previousRank) + "º"
-            string previousMomentumText = na(previousMomentum) ? "N/D" : str.tostring(previousMomentum * 100.0, "#.##") + "%"
-            string previousStateText = f_state_text(previousState, previousDiagnostic)
-            color previousBg = f_state_bg(previousState, previousDiagnostic)
-            table.cell(portfolioTable, 0, 3, previousRankText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 1, 3, array.get(NAMES, previousWeeklyPositionIndex), bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 2, 3, previousMomentumText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 3, 3, previousStateText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        else if previousWeeklyPositionIndex == POSITION_CASH
-            color cashBg = TABLE_CASH_BG
-            table.cell(portfolioTable, 0, 3, "-", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 1, 3, "CAIXA", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 2, 3, "-", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 3, 3, "CAIXA", bgcolor = cashBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+            table.cell(portfolioTable, 0, 2, "-", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 1, 2, "N/D", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 2, 2, "-", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+            table.cell(portfolioTable, 3, 2, "N/D", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+
+        // POSICAO ANTERIOR: ultima custodia encerrada, preservando sua data real de entrada.
+        string previousPositionDateText = f_date_text(previousPositionTime)
+        table.cell(portfolioTable, 0, 3, "POSICAO ANTERIOR", bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(portfolioTable, 1, 3, previousPositionDateText, bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(portfolioTable, 2, 3, "RANK / " + portfolioMomentumHeader, bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+        table.cell(portfolioTable, 3, 3, "ESTADO", bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+
+        if previousPositionIndex >= 0 and previousPositionIndex < N
+            int previousLiveRank = f_eligible_high_momentum_rank(previousPositionIndex)
+            float previousLiveMomentum = array.get(MOMENTUM_VALUES, previousPositionIndex)
+            int previousLiveState = array.get(TREND_STATES, previousPositionIndex)
+            int previousLiveDiagnostic = array.get(DIAG_CODES, previousPositionIndex)
+            string previousRankText = na(previousLiveRank) ? "N/D" : str.tostring(previousLiveRank) + "º"
+            string previousMomentumText = na(previousLiveMomentum) ? "N/D" : str.tostring(previousLiveMomentum * 100.0, "#.##") + "%"
+            string previousStateText = f_state_text(previousLiveState, previousLiveDiagnostic)
+            color previousBg = f_state_bg(previousLiveState, previousLiveDiagnostic)
+            table.cell(portfolioTable, 0, 4, previousRankText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 1, 4, array.get(NAMES, previousPositionIndex), bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 2, 4, previousMomentumText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+            table.cell(portfolioTable, 3, 4, previousStateText, bgcolor = previousBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        else if previousPositionIndex == POSITION_CASH
+            table.cell(portfolioTable, 0, 4, "-", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 1, 4, "CAIXA", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 2, 4, "-", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+            table.cell(portfolioTable, 3, 4, "CAIXA", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
         else
-            color emptyBg = TABLE_ND_BG
-            table.cell(portfolioTable, 0, 3, "-", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 1, 3, "N/D", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 2, 3, "-", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            table.cell(portfolioTable, 3, 3, "N/D", bgcolor = emptyBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-// ============================================================================
-// 15. RANKING COMPLETO: 29 ACOES ORDENADAS POR MOMENTUM
+            table.cell(portfolioTable, 0, 4, "-", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 1, 4, "N/D", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 2, 4, "-", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+            table.cell(portfolioTable, 3, 4, "N/D", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+
+        // PROXIMA POSICAO: duas linhas e apenas quando a pre-selecao de sexta esta ativa.
+        if showNextPosition
+            string nextPositionDateText = f_date_text(plannedNextRebalanceTime)
+            table.cell(portfolioTable, 0, 5, "PROXIMA POSICAO", bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 1, 5, nextPositionDateText, bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            table.cell(portfolioTable, 2, 5, "RANK / " + portfolioMomentumHeader, bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+            table.cell(portfolioTable, 3, 5, "ESTADO", bgcolor = infoBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+
+            if pendingWeeklySelectionIndex >= 0 and pendingWeeklySelectionIndex < N
+                string nextRankText = na(pendingWeeklySelectionRank) ? "N/D" : str.tostring(pendingWeeklySelectionRank) + "º"
+                string nextMomentumText = na(pendingWeeklySelectionMomentum) ? "N/D" : str.tostring(pendingWeeklySelectionMomentum * 100.0, "#.##") + "%"
+                string nextStateText = f_state_text(pendingWeeklySelectionState, pendingWeeklySelectionDiagnostic)
+                color nextBg = f_state_bg(pendingWeeklySelectionState, pendingWeeklySelectionDiagnostic)
+                table.cell(portfolioTable, 0, 6, nextRankText, bgcolor = nextBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(portfolioTable, 1, 6, array.get(NAMES, pendingWeeklySelectionIndex), bgcolor = nextBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(portfolioTable, 2, 6, nextMomentumText, bgcolor = nextBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+                table.cell(portfolioTable, 3, 6, nextStateText, bgcolor = nextBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            else if pendingWeeklySelectionIndex == POSITION_CASH
+                table.cell(portfolioTable, 0, 6, "-", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(portfolioTable, 1, 6, "CAIXA", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(portfolioTable, 2, 6, "-", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+                table.cell(portfolioTable, 3, 6, "CAIXA", bgcolor = TABLE_CASH_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            else
+                table.cell(portfolioTable, 0, 6, "-", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(portfolioTable, 1, 6, "N/D", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(portfolioTable, 2, 6, "-", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+                table.cell(portfolioTable, 3, 6, "N/D", bgcolor = TABLE_ND_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+
+// 15. RANKING COMPLETO: 40 ACOES ORDENADAS POR MOMENTUM
 // ============================================================================
 // Nesta visualizacao NAO existe filtro de tendencia:
-// - todas as 29 acoes participam;
+// - todas as 40 acoes participam;
 // - Momentum maior ocupa posicao melhor;
 // - Momentums N/D ficam depois de todos os valores numericos;
 // - ALTA/BAIXA/N/D e apenas informacao visual na quarta coluna.
 //
-// Para manter size.normal e reduzir altura, o ranking e dividido visualmente:
-// tabela 1 = posicoes  1 a 10;
-// tabela 2 = posicoes 11 a 20;
-// tabela 3 = posicoes 21 a 29.
+// O ranking e dividido em quatro blocos de 10 ativos para caber na tela:
+// 1..10 (superior esquerdo), 11..20 (superior direito),
+// 21..30 (inferior esquerdo), 31..40 (inferior direito).
 // ============================================================================
-// Referencias persistentes das tres partes visuais do mesmo ranking.
+var array<int> rankIndices = array.new_int(N, 0)
 var table momentumFull1 = na
 var table momentumFull2 = na
 var table momentumFull3 = na
-// Atualiza as tabelas somente no ultimo ponto da serie.
+var table momentumFull4 = na
 if barstate.islast
-    // Se RANKING COMPLETO nao estiver selecionado, apaga os tres blocos.
     if TABLE_VIEW != "RANKING COMPLETO"
         if not na(momentumFull1)
             table.delete(momentumFull1)
@@ -883,104 +1519,94 @@ if barstate.islast
         if not na(momentumFull3)
             table.delete(momentumFull3)
             momentumFull3 := na
-    // Caso a visualizacao completa esteja ativa, cria/atualiza os tres blocos.
+        if not na(momentumFull4)
+            table.delete(momentumFull4)
+            momentumFull4 := na
     else
-        // Cada bloco recebe uma margem transparente no topo. Depois dela, tabela 1 e 2
-        // possuem cabecalho + 10 linhas; tabela 3 possui cabecalho + 9 linhas.
         if na(momentumFull1)
             momentumFull1 := table.new(position.top_left, 4, 12, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
             table.merge_cells(momentumFull1, 0, 0, 3, 0)
         if na(momentumFull2)
-            momentumFull2 := table.new(position.top_center, 4, 12, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
+            momentumFull2 := table.new(position.top_right, 4, 12, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
             table.merge_cells(momentumFull2, 0, 0, 3, 0)
         if na(momentumFull3)
-            momentumFull3 := table.new(position.top_right, 4, 11, bgcolor = TABLE_MARGIN_BG, frame_color = TABLE_MARGIN_BG, frame_width = 0, border_color = TABLE_BORDER_COLOR, border_width = 1)
+            momentumFull3 := table.new(position.bottom_left, 4, 12, bgcolor = TABLE_PANEL_BG, frame_color = TABLE_BORDER_COLOR, frame_width = 1, border_color = TABLE_BORDER_COLOR, border_width = 1)
             table.merge_cells(momentumFull3, 0, 0, 3, 0)
-        // Cria um vetor de indices [0..28]. Ordenamos indices, e nao NAMES, para
-        // manter todos os arrays centrais sincronizados pelo mesmo indice do ativo.
-        array<int> rankIndices = array.new_int(N, 0)
+        if na(momentumFull4)
+            momentumFull4 := table.new(position.bottom_right, 4, 12, bgcolor = TABLE_PANEL_BG, frame_color = TABLE_BORDER_COLOR, frame_width = 1, border_color = TABLE_BORDER_COLOR, border_width = 1)
+            table.merge_cells(momentumFull4, 0, 0, 3, 0)
         for i = 0 to N - 1
             array.set(rankIndices, i, i)
-        // Selection sort decrescente por Momentum.
-        // Para apenas 29 elementos, o custo e pequeno. O comparador explicito
-        // garante desempate por indice original e coloca N/D no final.
         for rankPos = 0 to N - 2
             int bestPos = rankPos
             int bestIndex = array.get(rankIndices, bestPos)
             float bestMomentum = array.get(MOMENTUM_VALUES, bestIndex)
-            // Procura, no restante do vetor, algum candidato melhor que o atual.
             for candidatePos = rankPos + 1 to N - 1
                 int candidateIndex = array.get(rankIndices, candidatePos)
                 float candidateMomentum = array.get(MOMENTUM_VALUES, candidateIndex)
-                // Usa a mesma regra deterministica de comparacao do TOP 5.
                 bool candidateIsBetter = f_is_better_momentum(candidateMomentum, candidateIndex, bestMomentum, bestIndex)
-                // Se encontrou candidato melhor, ele vira o melhor da passagem.
                 if candidateIsBetter
                     bestPos := candidatePos
                     bestIndex := candidateIndex
                     bestMomentum := candidateMomentum
-            // Coloca o melhor ativo encontrado na posicao corrente do ranking.
             if bestPos != rankPos
                 int displacedIndex = array.get(rankIndices, rankPos)
                 array.set(rankIndices, rankPos, bestIndex)
                 array.set(rankIndices, bestPos, displacedIndex)
-        // Cabecalho acompanha automaticamente o periodo configurado do Momentum.
         string fullMomentumHeader = "MOMENTUM " + str.tostring(MOMENTUM_PERIOD) + "D"
-        // Mantem os tres blocos alinhados. Como a linha 0 foi fundida em cada
-        // tabela, nao existem divisorias verticais dentro do vazio de 24%.
         table.cell(momentumFull1, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT)
         table.cell(momentumFull2, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT)
-        table.cell(momentumFull3, 0, 0, "", bgcolor = TABLE_MARGIN_BG, text_color = TABLE_MARGIN_BG, height = TOP_TABLE_MARGIN_HEIGHT)
-        // Cabecalho do primeiro bloco: ranking 1 a 10.
-        table.cell(momentumFull1, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull1, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull1, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull1, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        // Cabecalho do segundo bloco: ranking 11 a 20.
-        table.cell(momentumFull2, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull2, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull2, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull2, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        // Cabecalho do terceiro bloco: ranking 21 a 29.
-        table.cell(momentumFull3, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull3, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull3, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        table.cell(momentumFull3, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-        // Percorre o vetor JA ORDENADO e desenha cada uma das 29 posicoes.
+        table.cell(momentumFull3, 0, 0, "", bgcolor = TABLE_PANEL_BG, text_color = TABLE_PANEL_BG, height = 1)
+        table.cell(momentumFull4, 0, 0, "", bgcolor = TABLE_PANEL_BG, text_color = TABLE_PANEL_BG, height = 1)
+        table.cell(momentumFull1, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull1, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull1, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+        table.cell(momentumFull1, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull2, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull2, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull2, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+        table.cell(momentumFull2, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull3, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull3, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull3, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+        table.cell(momentumFull3, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull4, 0, 1, "RANK", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull4, 1, 1, "ACAO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+        table.cell(momentumFull4, 2, 1, fullMomentumHeader, bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+        table.cell(momentumFull4, 3, 1, "ESTADO", bgcolor = TABLE_HEADER_BG, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
         for rankPos = 0 to N - 1
-            // Indice original do ativo que ocupa esta posicao do ranking.
             int assetIndex = array.get(rankIndices, rankPos)
-            // Recupera Momentum, tendencia e diagnostico pelo mesmo indice.
             float assetMomentum = array.get(MOMENTUM_VALUES, assetIndex)
             int assetState = array.get(TREND_STATES, assetIndex)
             int assetDiagnostic = array.get(DIAG_CODES, assetIndex)
-            // Prepara os textos mostrados ao usuario.
             string rankText = str.tostring(rankPos + 1) + "º"
             string momentumText = na(assetMomentum) ? "N/D" : str.tostring(assetMomentum * 100.0, "#.##") + "%"
             string stateText = f_state_text(assetState, assetDiagnostic)
-            // A linha inteira recebe a cor correspondente ao estado do Gap Momentum.
             color rowBg = f_state_bg(assetState, assetDiagnostic)
-            // Posicoes 1..10 vao para o bloco da esquerda.
             if rankPos < 10
                 int targetRow = rankPos + 2
-                table.cell(momentumFull1, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull1, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull1, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull1, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            // Posicoes 11..20 vao para o bloco central.
+                table.cell(momentumFull1, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(momentumFull1, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(momentumFull1, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+                table.cell(momentumFull1, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
             else if rankPos < 20
                 int targetRow = rankPos - 8
-                table.cell(momentumFull2, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull2, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull2, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull2, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-            // Posicoes 21..29 vao para o bloco da direita.
-            else
+                table.cell(momentumFull2, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(momentumFull2, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(momentumFull2, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+                table.cell(momentumFull2, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            else if rankPos < 30
                 int targetRow = rankPos - 18
-                table.cell(momentumFull3, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull3, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull3, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
-                table.cell(momentumFull3, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal)
+                table.cell(momentumFull3, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(momentumFull3, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(momentumFull3, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+                table.cell(momentumFull3, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+            else
+                int targetRow = rankPos - 28
+                table.cell(momentumFull4, 0, targetRow, rankText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(momentumFull4, 1, targetRow, array.get(NAMES, assetIndex), bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
+                table.cell(momentumFull4, 2, targetRow, momentumText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_right)
+                table.cell(momentumFull4, 3, targetRow, stateText, bgcolor = rowBg, text_color = TABLE_TEXT_COLOR, text_size = size.normal, text_halign = text.align_center)
 // ============================================================================
 // 16. INTERFACE INVISIVEL PARA O SCRIPT 2 / BACKTEST
 // ============================================================================
@@ -988,7 +1614,7 @@ if barstate.islast
 // consumir. Todos sao numericos porque input.source() trabalha com series float.
 //
 // 1) DECISAO SEMANAL
-// BT_WEEKLY_POSITION: 0..28 = ticker decidido; -1 = CAIXA; -2 = nao iniciado.
+// BT_WEEKLY_POSITION: 0..39 = ticker decidido; -1 = CAIXA; -2 = nao iniciado.
 // BT_WEEKLY_EVENT: timestamp do primeiro pregao B3 em que a decisao foi tomada.
 //
 // 2) EXECUCAO DA DECISAO
@@ -999,10 +1625,10 @@ if barstate.islast
 // venda da posicao anterior. BT_EXIT_POSITION identifica qual ticker foi encerrado.
 //
 // REGRA DE PRECO:
-// Para reproducao historica consistente, conectar Script 1 e Script 2 em grafico D.
-// A decisao usa o rebalanceamento semanal ja existente. A compra/venda do canal de
-// backtest e executada pela abertura diaria do primeiro pregao B3 POSTERIOR.
-// Mudancas defensivas intrassemanais de currentPositionIndex nunca entram neste canal.
+// A decisao semanal e congelada no fechamento da sexta-feira (ou, no fallback, no ultimo
+// pregao confirmado da semana anterior) e a troca e executada pela ABERTURA do primeiro
+// pregao B3 real da nova semana. Mudancas defensivas continuam confirmadas e registradas
+// no fechamento do proprio dia em que a posicao termina BAIXA ou N/D.
 plot(backtestWeeklyPositionIndex, "BT_WEEKLY_POSITION", display = display.none, editable = false)
 plot(backtestWeeklyEventTime, "BT_WEEKLY_EVENT", display = display.none, editable = false)
 plot(backtestHeldPositionIndex, "BT_TRADE_POSITION", display = display.none, editable = false)
@@ -1012,8 +1638,13 @@ plot(backtestEntryTimeEvent, "BT_ENTRY_TIME", display = display.none, editable =
 plot(backtestExitPositionEvent, "BT_EXIT_POSITION", display = display.none, editable = false)
 plot(backtestExitPriceEvent, "BT_EXIT_PRICE", display = display.none, editable = false)
 plot(backtestExitTimeEvent, "BT_EXIT_TIME", display = display.none, editable = false)
+// Canal unificado para um Script 2 que disponha de apenas um input.source() externo.
+// Milhar = posicao + 2; unidade = 0 sem evento, 1 entrada/troca para acao, 2 ida a CAIXA.
+int compositeEventCode = na(backtestTradeEventTime) ? 0 : backtestHeldPositionIndex == POSITION_CASH ? 2 : 1
+float compositeSignal = (backtestHeldPositionIndex + 2.0) * 1000.0 + compositeEventCode
+plot(compositeSignal, "BT_COMPOSITE_SIGNAL", display = display.none, editable = false)
 // ============================================================================
-// 17. RESUMO DA ARQUITETURA - V29 + INTERFACE BT
+// 17. RESUMO DA ARQUITETURA - V31 + 40 ACOES FUNDAMENTAIS + INTERFACE BT
 // ============================================================================
 // ENTRADAS:
 // - Gap Momentum: GAP_PERIOD = 41 por padrao.
@@ -1031,24 +1662,31 @@ plot(backtestExitTimeEvent, "BT_EXIT_TIME", display = display.none, editable = f
 //
 // CARTEIRA SEMANAL:
 // - aparece junto do TOP 5;
-// - usa quatro linhas: REBAL. ATUAL, acao atual, REBAL. ANTERIOR, acao anterior;
-// - removeu a antiga coluna POSICAO e manteve RANK, ACAO, MOMENTUM e ESTADO;
+// - mostra POSICAO ATUAL e POSICAO ANTERIOR e, abaixo, tres linhas semanais;
+// - REBALANCEAMENTO ATUAL e ANTERIOR ficam sempre visiveis;
+// - PROXIMO REBALANCEAMENTO so aparece apos o fechamento confirmado da sexta-feira;
+// - o PROXIMO mostra a acao pre-selecionada na sexta e a data planejada dinamica;
+// - depois de aparecer, permanece ate ser promovido a REBALANCEAMENTO ATUAL;
+// - quando executado, o PROXIMO vira ATUAL e o antigo ATUAL vira ANTERIOR;
+// - usa RANK ALTA para dados vivos e RANK ENTRADA para snapshots historicos;
 // - informa as datas REAIS dos dois ultimos rebalanceamentos semanais;
-// - rebalanceia apenas na primeira barra semanal efetivamente negociada na B3;
-// - segunda-feira feriado transfere automaticamente o evento para o proximo
-//   primeiro pregao disponivel;
+// - pre-seleciona o Top 1 elegivel no fechamento confirmado da sexta-feira;
+// - executa essa selecao pela abertura do primeiro pregao REAL da semana seguinte;
+// - se segunda-feira nao tiver pregao, o ticker permanece congelado e espera o proximo dia;
+// - a linha PROXIMO REBALANCEAMENTO nasce no fechamento da sexta-feira e, depois que a data planejada termina
+//   sem pregao, avanca para o proximo dia util sem usar calendario manual de feriados;
 // - entre rebalanceamentos, a posicao fica congelada enquanto continuar em ALTA;
-// - no novo rebalanceamento, escolhe o Top 1 de Momentum entre as acoes em ALTA;
+// - a selecao semanal usa o Top 1 de Momentum entre as acoes em ALTA no fechamento anterior;
 // - se a mesma continuar Top 1 elegivel, permanece por mais uma semana;
 // - se outra a superar, a nova assume; o ciclo semanal anterior permanece registrado;
 // - se nenhuma estiver elegivel no rebalanceamento, a posicao ATUAL vira CAIXA;
-// - se a posicao atual sair de ALTA no meio da semana, troca imediatamente para
+// - se a posicao atual terminar o pregao fora de ALTA, troca no fechamento para
 //   o novo Top 1 em ALTA; se nao houver substituta, vai para CAIXA;
 // - estando em CAIXA, a reentrada ocorre apenas no proximo rebalanceamento semanal;
-// - rank, Momentum e estado das acoes mostradas usam os valores MAIS RECENTES.
+// - posicao atual usa rank/momentum/estado vivos; snapshots preservam rank/momentum/estado de entrada.
 //
 // RANKING COMPLETO:
-// - inclui as 29 acoes;
+// - inclui as 40 acoes;
 // - ordena por Momentum sem filtro de tendencia;
 // - coloca Momentum N/D no final;
 // - desempata explicitamente pela ordem original do universo;
@@ -1056,19 +1694,21 @@ plot(backtestExitTimeEvent, "BT_EXIT_TIME", display = display.none, editable = f
 //
 // CONTROLE DE TEMPO:
 // - PETR4 e usada somente como calendario B3 do rebalanceamento;
-// - request.security(..., "D", [time("W"), time]) detecta a mudanca de semana
-//   e registra a data diaria efetivamente negociada no feed B3;
+// - o payload diario da PETR4 identifica o primeiro pregao semanal e congela sua abertura
+//   sem consultar o calendario do ativo hospedeiro;
 // - a carteira nao troca no meio da semana por simples mudanca de ranking;
-// - a unica troca intrassemanal e defensiva, quando a posicao atual deixa de ALTA.
+// - a unica troca intrassemanal e defensiva, confirmada somente no fechamento.
 //
 // INTERFACE PARA O SCRIPT 2:
 // - BT_WEEKLY_POSITION publica somente a decisao do rebalanceamento semanal;
 // - BT_WEEKLY_EVENT identifica cada novo rebalanceamento pela data B3 efetiva;
-// - a decisao semanal e executada na abertura do primeiro pregao B3 posterior;
+// - a decisao semanal pre-selecionada e executada na abertura do primeiro pregao real;
 // - BT_ENTRY_PRICE/BT_ENTRY_TIME entregam os dados da nova entrada;
 // - BT_EXIT_POSITION/BT_EXIT_PRICE/BT_EXIT_TIME entregam os dados da saida;
 // - BT_TRADE_EVENT identifica somente execucoes reais (nao repeticoes do mesmo ticker);
-// - trocas defensivas intrassemanais nao alteram nenhum dos dois canais;
+// - trocas defensivas nao alteram BT_WEEKLY_POSITION e usam o fechamento confirmado
+//   do proprio pregao em que a posicao terminou fora de ALTA;
+// - BT_COMPOSITE_SIGNAL oferece estado+evento em uma unica serie para o Script 2;
 // - o Script 2 sera responsavel por obter os precos e calcular lucro/prejuizo.
 //
 // AINDA NAO EXISTEM:
